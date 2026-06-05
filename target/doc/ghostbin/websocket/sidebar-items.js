@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["ClientMessage","ServerMessage"],"fn":["handle_client_message","handle_socket"]};

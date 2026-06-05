@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"fn":["layout_graph","to_dot"],"struct":["GraphData","GraphEdge","GraphNode"]};

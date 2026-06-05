@@ -1,1 +1,0 @@
-window.SIDEBAR_ITEMS = {"enum":["BinaryFormat"],"struct":["Binary","BinaryAnalyzer","Function","Instruction"]};
