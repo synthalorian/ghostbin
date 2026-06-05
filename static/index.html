@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rev Engine - AI Reverse Engineering</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #0a0a0f;
+            color: #e0e0e0;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            overflow: hidden;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 250px 1fr 300px;
+            grid-template-rows: 40px 1fr;
+            height: 100vh;
+        }
+        .toolbar {
+            grid-column: 1 / -1;
+            background: #15151a;
+            border-bottom: 1px solid #2a2a35;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 12px;
+        }
+        .toolbar button {
+            background: #1e1e28;
+            border: 1px solid #3a3a45;
+            color: #e0e0e0;
+            padding: 4px 12px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+        }
+        .toolbar button:hover {
+            background: #2a2a35;
+        }
+        .sidebar {
+            background: #12121a;
+            border-right: 1px solid #2a2a35;
+            padding: 12px;
+            overflow-y: auto;
+        }
+        .sidebar h3 {
+            font-size: 11px;
+            text-transform: uppercase;
+            color: #888;
+            margin-bottom: 8px;
+            letter-spacing: 1px;
+        }
+        .function-list {
+            list-style: none;
+        }
+        .function-list li {
+            padding: 4px 8px;
+            font-size: 12px;
+            cursor: pointer;
+            border-radius: 4px;
+        }
+        .function-list li:hover {
+            background: #1e1e28;
+        }
+        .main {
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+            overflow: hidden;
+        }
+        .disasm-view {
+            background: #0f0f15;
+            overflow-y: auto;
+            padding: 12px;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .disasm-line {
+            display: grid;
+            grid-template-columns: 100px 80px 1fr;
+            gap: 12px;
+            padding: 2px 8px;
+            border-radius: 4px;
+        }
+        .disasm-line:hover {
+            background: #1a1a25;
+        }
+        .addr { color: #6a6a7a; }
+        .bytes { color: #4a4a5a; font-size: 11px; }
+        .mnemonic { color: #c0a060; }
+        .operands { color: #e0e0e0; }
+        .decompile-view {
+            background: #12121a;
+            border-top: 1px solid #2a2a35;
+            padding: 12px;
+            overflow-y: auto;
+            font-size: 13px;
+        }
+        .decompile-view pre {
+            color: #a0c0e0;
+        }
+        .right-panel {
+            background: #12121a;
+            border-left: 1px solid #2a2a35;
+            padding: 12px;
+            display: grid;
+            grid-template-rows: auto 1fr 1fr;
+            gap: 12px;
+        }
+        .ai-analysis {
+            background: #1a1a25;
+            border-radius: 8px;
+            padding: 12px;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+        .ai-analysis h4 {
+            color: #60c0a0;
+            margin-bottom: 8px;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .annotations {
+            background: #1a1a25;
+            border-radius: 8px;
+            padding: 12px;
+            overflow-y: auto;
+        }
+        .annotation {
+            padding: 8px;
+            margin-bottom: 8px;
+            background: #222230;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .annotation .author {
+            color: #888;
+            font-size: 10px;
+            margin-bottom: 4px;
+        }
+        .status-bar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 24px;
+            background: #15151a;
+            border-top: 1px solid #2a2a35;
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            font-size: 11px;
+            color: #666;
+        }
+        .status-bar .indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #60c0a0;
+            margin-right: 8px;
+        }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="toolbar">
+            <button onclick="loadBinary()">Load Binary</button>
+            <button onclick="aiAnalyze()">AI Analyze</button>
+            <button onclick="decompile()">Decompile</button>
+            <div style="flex: 1;"></div>
+            <span style="font-size: 11px; color: #666;">GhostBin v0.1.0</span>
+        </div>
+
+        <div class="sidebar">
+            <h3>Functions</h3>
+            <ul class="function-list" id="functionList">
+                <li>entry_point</li>
+                <li>main</li>
+                <li>authenticate</li>
+                <li>encrypt_data</li>
+                <li>parse_config</li>
+            </ul>
+        </div>
+
+        <div class="main">
+            <div class="disasm-view" id="disasmView">
+                <div class="disasm-line">
+                    <span class="addr">0x1000</span>
+                    <span class="bytes">55</span>
+                    <span><span class="mnemonic">push</span> <span class="operands">rbp</span></span>
+                </div>
+                <div class="disasm-line">
+                    <span class="addr">0x1001</span>
+                    <span class="bytes">48 89 e5</span>
+                    <span><span class="mnemonic">mov</span> <span class="operands">rbp, rsp</span></span>
+                </div>
+                <div class="disasm-line">
+                    <span class="addr">0x1004</span>
+                    <span class="bytes">48 83 ec 20</span>
+                    <span><span class="mnemonic">sub</span> <span class="operands">rsp, 0x20</span></span>
+                </div>
+            </div>
+            <div class="decompile-view">
+                <pre id="decompileOutput">// Select a function and click "Decompile" to see pseudo-code</pre>
+            </div>
+        </div>
+
+        <div class="right-panel">
+            <div class="ai-analysis">
+                <h4>AI Analysis</h4>
+                <div id="aiOutput">Click "AI Analyze" to get LLM insights on the selected function.</div>
+            </div>
+            <div class="annotations">
+                <h3 style="font-size: 11px; text-transform: uppercase; color: #888; margin-bottom: 8px;">Annotations</h3>
+                <div class="annotation">
+                    <div class="author">synthalorian • 2h ago</div>
+                    <div>This appears to be the main authentication routine. Check for timing attacks.</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="status-bar">
+        <div class="indicator"></div>
+        <span>Connected to local LLM (llama.cpp)</span>
+        <span style="flex: 1;"></span>
+        <span>Binary: none loaded</span>
+    </div>
+
+    <script>
+        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+
+        ws.onopen = () => console.log('WebSocket connected');
+        ws.onmessage = (event) => {
+            const msg = JSON.parse(event.data);
+            console.log('Received:', msg);
+        };
+
+        function loadBinary() {
+            const path = prompt('Enter binary path:');
+            if (path) {
+                fetch('/api/binary/load', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path, name: path.split('/').pop() })
+                })
+                .then(r => r.json())
+                .then(data => console.log('Loaded:', data));
+            }
+        }
+
+        function aiAnalyze() {
+            document.getElementById('aiOutput').innerHTML = '<div class="loading">Analyzing...</div>';
+            // TODO: Call AI analyze endpoint
+        }
+
+        function decompile() {
+            document.getElementById('decompileOutput').innerHTML = '// Decompiling...';
+            // TODO: Call decompile endpoint
+        }
+    </script>
+</body>
+</html>
