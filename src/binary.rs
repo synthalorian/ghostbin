@@ -43,6 +43,21 @@ pub struct Function {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Import {
+    pub dll: String,
+    pub name: String,
+    pub ordinal: Option<u16>,
+    pub address: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Export {
+    pub name: String,
+    pub address: u64,
+    pub ordinal: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Instruction {
     pub address: u64,
     pub bytes: Vec<u8>,
@@ -69,6 +84,8 @@ pub struct Binary {
     pub symbols: Vec<Symbol>,
     pub relocations: Vec<Relocation>,
     pub functions: Vec<Function>,
+    pub imports: Vec<Import>,
+    pub exports: Vec<Export>,
 }
 
 pub struct BinaryAnalyzer {
@@ -97,9 +114,15 @@ impl BinaryAnalyzer {
             symbols: Vec::new(),
             relocations: Vec::new(),
             functions: Vec::new(),
+            imports: Vec::new(),
+            exports: Vec::new(),
         };
 
-        match Object::parse(&binary.data)? {
+        // Parse the object format first (clone data to avoid borrow issues)
+        let data_clone = binary.data.clone();
+        let object = Object::parse(&data_clone)?;
+        
+        match object {
             Object::Elf(elf) => {
                 binary.format = BinaryFormat::Elf;
                 binary.architecture = Architecture::from_elf_machine(elf.header.e_machine);
@@ -268,26 +291,16 @@ impl BinaryAnalyzer {
 
                 // If no functions found from symbols, try function boundary detection
                 if binary.functions.is_empty() {
-                    binary.functions = Self::detect_function_boundaries(&binary.data, &elf, binary.architecture);
+                    binary.functions = Self::detect_elf_function_boundaries(&binary.data, &elf, binary.architecture);
                 }
             }
-            Object::Mach(_) => {
+            Object::Mach(mach) => {
                 binary.format = BinaryFormat::MachO;
-                // TODO: Mach-O parsing
-                binary.functions.push(Function {
-                    address: 0x1000,
-                    name: "entry".to_string(),
-                    size: 0,
-                });
+                Self::parse_mach_o(&mut binary, mach)?;
             }
-            Object::PE(_) => {
+            Object::PE(pe) => {
                 binary.format = BinaryFormat::Pe;
-                // TODO: PE parsing
-                binary.functions.push(Function {
-                    address: 0x1000,
-                    name: "entry".to_string(),
-                    size: 0,
-                });
+                Self::parse_pe(&mut binary, pe)?;
             }
             _ => {
                 binary.functions.push(Function {
@@ -305,7 +318,187 @@ impl BinaryAnalyzer {
         Ok(id)
     }
 
-    fn detect_function_boundaries(
+    fn parse_mach_o(binary: &mut Binary, mach: goblin::mach::Mach) -> anyhow::Result<()> {
+        match mach {
+            goblin::mach::Mach::Binary(macho) => {
+                binary.architecture = Architecture::from_macho_cpu(macho.header.cputype);
+                binary.entry_point = macho.entry;
+
+                // Parse segments and sections
+                for segment in &macho.segments {
+                    let seg_name = segment.name().unwrap_or("").to_string();
+                    
+                    // Add segment as a section-like entry
+                    binary.sections.push(Section {
+                        name: seg_name.clone(),
+                        address: segment.vmaddr,
+                        size: segment.vmsize,
+                        offset: segment.fileoff as u64,
+                        flags: segment.maxprot as u64,
+                        section_type: "segment".to_string(),
+                    });
+
+                    // Parse sections within segment
+                    for section_result in segment.into_iter() {
+                        if let Ok((section, _data)) = section_result {
+                            let sect_name = section.name().unwrap_or("").to_string();
+                            binary.sections.push(Section {
+                                name: format!("{}/{}", sect_name, seg_name),
+                                address: section.addr,
+                                size: section.size,
+                                offset: section.offset as u64,
+                                flags: section.flags as u64,
+                                section_type: format!("0x{:x}", section.flags),
+                            });
+                        }
+                    }
+                }
+
+                // Parse symbols
+                for sym_result in macho.symbols() {
+                    let (name, nlist) = sym_result?;
+                    let name = name.to_string();
+                    let addr = nlist.n_value;
+                    
+                    // Determine symbol type from n_type
+                    let n_type = nlist.n_type;
+                    let sym_type = if n_type & goblin::mach::symbols::N_TYPE == goblin::mach::symbols::N_SECT {
+                        "SECT"
+                    } else if n_type & goblin::mach::symbols::N_TYPE == goblin::mach::symbols::N_ABS {
+                        "ABS"
+                    } else if n_type & goblin::mach::symbols::N_TYPE == goblin::mach::symbols::N_UNDF {
+                        "UNDF"
+                    } else {
+                        "UNKNOWN"
+                    };
+
+                    let bind = if n_type & goblin::mach::symbols::N_EXT != 0 {
+                        "EXT"
+                    } else {
+                        "LOCAL"
+                    };
+
+                    binary.symbols.push(Symbol {
+                        name: name.clone(),
+                        address: addr,
+                        size: 0, // Mach-O doesn't store symbol sizes directly
+                        symbol_type: sym_type.to_string(),
+                        bind: bind.to_string(),
+                        section_index: nlist.n_sect as u16,
+                    });
+
+                    // Check if this is a function symbol
+                    // In Mach-O, function symbols are typically in __text section
+                    if n_type & goblin::mach::symbols::N_TYPE == goblin::mach::symbols::N_SECT
+                        && addr != 0
+                        && nlist.n_sect > 0
+                    {
+                        // Check if it's in a text section
+                        let is_text = binary.sections.iter().any(|s| {
+                            s.name.contains("__text") && s.address <= addr && addr < s.address + s.size
+                        });
+                        
+                        if is_text || name.starts_with('_') {
+                            if !binary.functions.iter().any(|f| f.address == addr) {
+                                binary.functions.push(Function {
+                                    address: addr,
+                                    name: name.clone(),
+                                    size: 0,
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // Function boundary detection for Mach-O
+                if binary.functions.is_empty() {
+                    binary.functions = Self::detect_macho_function_boundaries(binary);
+                }
+            }
+            goblin::mach::Mach::Fat(multi) => {
+                // Try to parse the first architecture
+                match multi.get(0) {
+                    Ok(goblin::mach::SingleArch::MachO(macho)) => {
+                        return Self::parse_mach_o(binary, goblin::mach::Mach::Binary(macho));
+                    }
+                    Ok(_) => anyhow::bail!("Fat Mach-O contains non-MachO archive"),
+                    Err(e) => anyhow::bail!("Failed to parse fat Mach-O binary: {}", e),
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn parse_pe(binary: &mut Binary, pe: goblin::pe::PE) -> anyhow::Result<()> {
+        binary.architecture = Architecture::from_pe_machine(pe.header.coff_header.machine);
+        binary.entry_point = pe.entry as u64;
+
+        // Parse sections
+        for section in &pe.sections {
+            let name = std::str::from_utf8(&section.name)
+                .unwrap_or("")
+                .trim_end_matches('\0')
+                .to_string();
+            
+            binary.sections.push(Section {
+                name,
+                address: section.virtual_address as u64,
+                size: section.virtual_size as u64,
+                offset: section.pointer_to_raw_data as u64,
+                flags: section.characteristics as u64,
+                section_type: format!("0x{:x}", section.characteristics),
+            });
+        }
+
+        // Parse imports
+        for import in &pe.imports {
+            let dll = import.dll.to_string();
+            let ordinal = if import.name.is_empty() {
+                Some(import.ordinal)
+            } else {
+                None
+            };
+            
+            binary.imports.push(Import {
+                dll,
+                name: import.name.to_string(),
+                ordinal,
+                address: import.offset as u64,
+            });
+        }
+
+        // Parse exports
+        let ordinal_base = pe.export_data.as_ref().map(|ed| ed.export_directory_table.ordinal_base).unwrap_or(1);
+        for (i, export) in pe.exports.iter().enumerate() {
+            let name = export.name.unwrap_or("").to_string();
+            let ordinal = ordinal_base + i as u32;
+            
+            binary.exports.push(Export {
+                name: name.clone(),
+                address: export.rva as u64,
+                ordinal,
+            });
+
+            // Export points could be functions - add them
+            if export.rva != 0 && !name.is_empty() && !binary.functions.iter().any(|f| f.address == export.rva as u64) {
+                binary.functions.push(Function {
+                    address: export.rva as u64,
+                    name,
+                    size: 0,
+                });
+            }
+        }
+
+        // Function boundary detection for PE
+        if binary.functions.is_empty() {
+            binary.functions = Self::detect_pe_function_boundaries(binary);
+        }
+
+        Ok(())
+    }
+
+    fn detect_elf_function_boundaries(
         data: &[u8],
         elf: &goblin::elf::Elf,
         arch: Architecture,
@@ -439,6 +632,183 @@ impl BinaryAnalyzer {
         functions
     }
 
+    fn detect_macho_function_boundaries(binary: &Binary) -> Vec<Function> {
+        let mut functions = Vec::new();
+
+        // Find __text section
+        let text_section = binary.sections.iter().find(|s| s.name.contains("__text"));
+
+        if let Some(text) = text_section {
+            let start = text.offset as usize;
+            let end = start + text.size as usize;
+            if end <= binary.data.len() {
+                let text_data = &binary.data[start..end];
+                let base_addr = text.address;
+
+                match binary.architecture {
+                    Architecture::X86_64 => {
+                        for i in 0..text_data.len() {
+                            if text_data[i] == 0x55 {
+                                let has_mov_rbp_rsp = i + 3 < text_data.len()
+                                    && text_data[i + 1] == 0x48
+                                    && text_data[i + 2] == 0x89
+                                    && text_data[i + 3] == 0xe5;
+
+                                if has_mov_rbp_rsp || i == 0 || text_data.get(i.wrapping_sub(1)) == Some(&0xc3) {
+                                    let addr = base_addr + i as u64;
+                                    functions.push(Function {
+                                        address: addr,
+                                        name: format!("sub_{:x}", addr),
+                                        size: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Architecture::Arm64 => {
+                        for i in (0..text_data.len()).step_by(4) {
+                            if i + 3 < text_data.len() {
+                                let insn = u32::from_le_bytes([
+                                    text_data[i],
+                                    text_data[i + 1],
+                                    text_data[i + 2],
+                                    text_data[i + 3],
+                                ]);
+                                let is_stp = (insn & 0x7f800000) == 0x29800000;
+                                let is_sub_sp = (insn & 0x7f800000) == 0x51000000 && ((insn >> 5) & 0x1f) == 31;
+
+                                if is_stp || is_sub_sp {
+                                    let addr = base_addr + i as u64;
+                                    functions.push(Function {
+                                        address: addr,
+                                        name: format!("sub_{:x}", addr),
+                                        size: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        functions.push(Function {
+                            address: binary.entry_point,
+                            name: "entry".to_string(),
+                            size: text.size,
+                        });
+                    }
+                }
+            }
+        }
+
+        if functions.is_empty() {
+            functions.push(Function {
+                address: binary.entry_point,
+                name: "entry".to_string(),
+                size: 0,
+            });
+        }
+
+        functions
+    }
+
+    fn detect_pe_function_boundaries(binary: &Binary) -> Vec<Function> {
+        let mut functions = Vec::new();
+
+        // Find .text section in PE
+        let text_section = binary.sections.iter().find(|s| {
+            s.name == ".text" || s.name == "CODE" || s.name == "text"
+        });
+
+        if let Some(text) = text_section {
+            let start = text.offset as usize;
+            let end = start + text.size as usize;
+            if end <= binary.data.len() {
+                let text_data = &binary.data[start..end];
+                let base_addr = text.address;
+
+                match binary.architecture {
+                    Architecture::X86_64 | Architecture::X86 => {
+                        // PE function prologues
+                        for i in 0..text_data.len() {
+                            if text_data[i] == 0x55 {
+                                let has_mov_rbp_rsp = i + 3 < text_data.len()
+                                    && text_data[i + 1] == 0x48
+                                    && text_data[i + 2] == 0x89
+                                    && text_data[i + 3] == 0xe5;
+
+                                // Also look for MSVC-style prologue
+                                let has_mov_esp_ebp = i + 2 < text_data.len()
+                                    && text_data[i + 1] == 0x8b
+                                    && text_data[i + 2] == 0xec;
+
+                                if has_mov_rbp_rsp || has_mov_esp_ebp || i == 0 
+                                    || text_data.get(i.wrapping_sub(1)) == Some(&0xc3)
+                                    || text_data.get(i.wrapping_sub(1)) == Some(&0xc2) {
+                                    let addr = base_addr + i as u64;
+                                    functions.push(Function {
+                                        address: addr,
+                                        name: format!("sub_{:x}", addr),
+                                        size: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Architecture::Arm64 => {
+                        for i in (0..text_data.len()).step_by(4) {
+                            if i + 3 < text_data.len() {
+                                let insn = u32::from_le_bytes([
+                                    text_data[i],
+                                    text_data[i + 1],
+                                    text_data[i + 2],
+                                    text_data[i + 3],
+                                ]);
+                                let is_stp = (insn & 0x7f800000) == 0x29800000;
+                                let is_sub_sp = (insn & 0x7f800000) == 0x51000000 && ((insn >> 5) & 0x1f) == 31;
+
+                                if is_stp || is_sub_sp {
+                                    let addr = base_addr + i as u64;
+                                    functions.push(Function {
+                                        address: addr,
+                                        name: format!("sub_{:x}", addr),
+                                        size: 0,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    _ => {
+                        functions.push(Function {
+                            address: binary.entry_point,
+                            name: "entry".to_string(),
+                            size: text.size,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Also check export table for function addresses
+        for export in &binary.exports {
+            if export.address != 0 && !functions.iter().any(|f| f.address == export.address) {
+                functions.push(Function {
+                    address: export.address,
+                    name: export.name.clone(),
+                    size: 0,
+                });
+            }
+        }
+
+        if functions.is_empty() {
+            functions.push(Function {
+                address: binary.entry_point,
+                name: "entry".to_string(),
+                size: 0,
+            });
+        }
+
+        functions
+    }
+
     pub fn get_functions(&self, id: &str) -> anyhow::Result<Vec<Function>> {
         let binary = self
             .binaries
@@ -469,6 +839,22 @@ impl BinaryAnalyzer {
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
         Ok(binary.relocations.clone())
+    }
+
+    pub fn get_imports(&self, id: &str) -> anyhow::Result<Vec<Import>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+        Ok(binary.imports.clone())
+    }
+
+    pub fn get_exports(&self, id: &str) -> anyhow::Result<Vec<Export>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+        Ok(binary.exports.clone())
     }
 
     pub fn disassemble_function(
@@ -504,7 +890,7 @@ impl BinaryAnalyzer {
             };
             &binary.data[sec.offset as usize + offset..sec.offset as usize + offset + size]
         } else {
-            // Fallback: try to find in program headers for loaded segments
+            // Fallback: try to find in program headers for loaded segments (ELF)
             match Object::parse(&binary.data)? {
                 Object::Elf(elf) => {
                     for ph in &elf.program_headers {

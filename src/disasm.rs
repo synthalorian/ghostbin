@@ -26,6 +26,24 @@ impl Architecture {
         }
     }
 
+    pub fn from_pe_machine(machine: u16) -> Self {
+        match machine {
+            0x14c => Architecture::X86,      // IMAGE_FILE_MACHINE_I386
+            0x8664 => Architecture::X86_64,  // IMAGE_FILE_MACHINE_AMD64
+            0xaa64 => Architecture::Arm64,   // IMAGE_FILE_MACHINE_ARM64
+            _ => Architecture::Unknown,
+        }
+    }
+
+    pub fn from_macho_cpu(cputype: u32) -> Self {
+        match cputype {
+            7 => Architecture::X86,      // CPU_TYPE_X86
+            0x01000007 => Architecture::X86_64,  // CPU_TYPE_X86_64
+            0x0100000c => Architecture::Arm64,   // CPU_TYPE_ARM64
+            _ => Architecture::Unknown,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Architecture::X86 => "x86",

@@ -46,6 +46,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/binary/:id/sections", get(list_sections))
         .route("/api/binary/:id/symbols", get(list_symbols))
         .route("/api/binary/:id/relocations", get(list_relocations))
+        .route("/api/binary/:id/imports", get(list_imports))
+        .route("/api/binary/:id/exports", get(list_exports))
         .route("/api/binary/:id/function/:addr/disasm", get(get_disassembly))
         .route("/api/binary/:id/function/:addr/decompile", post(decompile_function))
         .route("/api/binary/:id/function/:addr/analyze", post(ai_analyze))
@@ -119,6 +121,28 @@ async fn list_relocations(
     let analyzer = state.analyzer.read().await;
     match analyzer.get_relocations(&id) {
         Ok(relocations) => Ok(Json(relocations)),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn list_imports(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    match analyzer.get_imports(&id) {
+        Ok(imports) => Ok(Json(imports)),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn list_exports(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    match analyzer.get_exports(&id) {
+        Ok(exports) => Ok(Json(exports)),
         Err(_) => Err(StatusCode::NOT_FOUND),
     }
 }
