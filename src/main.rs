@@ -1,6 +1,7 @@
 use axum::{
     extract::{Path, State, Json, WebSocketUpgrade, Query},
     http::StatusCode,
+    middleware,
     response::IntoResponse,
     routing::{delete, get, post},
     Router,
@@ -21,7 +22,10 @@ mod entropy;
 mod export;
 mod graph;
 mod llm;
+mod marketplace;
+mod openapi;
 mod plugin;
+mod security;
 mod session;
 mod strings;
 mod websocket;
@@ -32,7 +36,9 @@ use annotations::AnnotationStore;
 use bookmarks::BookmarkStore;
 use config::Config;
 use llm::LlmClient;
+use marketplace::PluginMarketplace;
 use plugin::PluginManager;
+use security::{RateLimiter, RateLimitConfig};
 use session::SessionStore;
 use websocket::WsHub;
 
@@ -45,6 +51,8 @@ struct AppState {
     llm: Arc<LlmClient>,
     hub: Arc<WsHub>,
     plugins: Arc<PluginManager>,
+    marketplace: Arc<PluginMarketplace>,
+    rate_limiter: Arc<RateLimiter>,
     config: Arc<Config>,
 }
 
@@ -76,6 +84,12 @@ async fn main() -> anyhow::Result<()> {
             })
     ));
 
+    let rate_limiter = RateLimiter::new(RateLimitConfig {
+        max_requests: config.analysis.max_report_functions as u32 * 10,
+        window_seconds: 60,
+        ..Default::default()
+    });
+
     let state = AppState {
         analyzer: Arc::new(RwLock::new(BinaryAnalyzer::new())),
         annotations: Arc::new(RwLock::new(AnnotationStore::new()?)),
@@ -84,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
         llm,
         hub: Arc::new(WsHub::new()),
         plugins: Arc::new(PluginManager::new()),
+        marketplace: PluginMarketplace::new(),
+        rate_limiter,
         config: Arc::new(config.clone()),
     };
 
@@ -91,10 +107,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/", get(serve_ui))
         .route("/api/status", get(get_status))
         .route("/api/config", get(get_config))
-        // Binary loading and analysis
+        .route("/api/openapi.json", get(get_openapi_spec))
+        .route("/api/docs", get(get_api_docs))
+        .route("/api/rate-limit", get(get_rate_limit_status))
         .route("/api/binary/load", post(load_binary))
         .route("/api/binary/batch", post(batch_load))
-        // Binary information
         .route("/api/binary/:id/functions", get(list_functions))
         .route("/api/binary/:id/sections", get(list_sections))
         .route("/api/binary/:id/symbols", get(list_symbols))
@@ -103,48 +120,47 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/binary/:id/exports", get(list_exports))
         .route("/api/binary/:id/resources", get(list_resources))
         .route("/api/binary/:id/strings", get(list_strings))
-        // Function analysis
         .route("/api/binary/:id/function/:addr/disasm", get(get_disassembly))
         .route("/api/binary/:id/function/:addr/decompile", post(decompile_function))
         .route("/api/binary/:id/function/:addr/analyze", post(ai_analyze))
-        // Graph views
         .route("/api/graph/:id/cfg", get(get_cfg))
         .route("/api/graph/:id/callgraph", get(get_call_graph))
         .route("/api/graph/:id/interactive", post(update_interactive_graph))
-        // Cross-reference and entropy
         .route("/api/binary/:id/entropy", get(get_entropy))
         .route("/api/binary/:id/signatures", get(get_signatures))
-        // Diff and patch analysis
         .route("/api/binary/diff", post(diff_binaries))
         .route("/api/binary/:id/patches", get(get_patches))
-        // Symbol renaming
         .route("/api/binary/:id/symbols/rename", post(rename_symbol))
-        // Annotations
         .route("/api/annotations/:addr", get(get_annotation).post(add_annotation))
         .route("/api/annotations/:addr/threads", get(get_annotation_threads))
-        // Bookmarks
         .route("/api/bookmarks", get(list_bookmarks).post(create_bookmark))
         .route("/api/bookmarks/:id", delete(delete_bookmark))
         .route("/api/bookmarks/:id/rename", post(rename_bookmark))
-        // Sessions
         .route("/api/sessions", get(list_sessions).post(create_session))
         .route("/api/sessions/:id", get(get_session).delete(delete_session))
         .route("/api/sessions/:id/state", post(update_session_state))
-        // Export
         .route("/api/export/:id/markdown", post(export_markdown))
         .route("/api/export/:id/pdf", post(export_pdf))
-        // Plugins
         .route("/api/plugins/load", post(load_plugin))
         .route("/api/plugins/list", get(list_plugins))
         .route("/api/plugins/:name/analyze", post(run_plugin))
         .route("/api/plugins/:name", delete(unload_plugin))
-        // WebSocket
+        .route("/api/marketplace/plugins", get(list_marketplace_plugins))
+        .route("/api/marketplace/plugins/:name", get(get_marketplace_plugin))
+        .route("/api/marketplace/install", post(install_marketplace_plugin))
+        .route("/api/marketplace/categories", get(get_marketplace_categories))
+        .route("/api/marketplace/tags", get(get_marketplace_tags))
+        .route("/api/marketplace/featured", get(get_featured_plugins))
+        .route("/api/marketplace/recent", get(get_recent_plugins))
+        .route("/api/marketplace/stats", get(get_marketplace_stats))
         .route("/ws", get(websocket_handler))
+        .layer(middleware::from_fn(security::security_headers_middleware))
+        .layer(middleware::from_fn(security::request_size_limit_middleware))
         .with_state(state);
 
     let bind_addr = format!("{}:{}", config.bind_addr, config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    info!("GhostBin v0.6.0 listening on {}", listener.local_addr()?);
+    info!("GhostBin v0.7.0 listening on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -166,7 +182,7 @@ async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     Json(StatusResponse {
-        version: "0.6.0".to_string(),
+        version: "0.7.0".to_string(),
         status: "healthy".to_string(),
         binaries_loaded: binary_count,
         annotation_count,
@@ -971,4 +987,87 @@ struct ConfigResponse {
 struct StringQueryParams {
     min_len: Option<usize>,
     pattern: Option<String>,
+}
+
+async fn get_openapi_spec() -> impl IntoResponse {
+    Json(openapi::get_openapi_json())
+}
+
+async fn get_api_docs() -> impl IntoResponse {
+    axum::response::Html(r#"
+<!DOCTYPE html>
+<html>
+<head>
+    <title>GhostBin API Documentation</title>
+    <meta charset="utf-8"/>
+    <link rel="stylesheet" type="text/css" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+</head>
+<body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script>
+        SwaggerUIBundle({
+            url: '/api/openapi.json',
+            dom_id: '#swagger-ui',
+            presets: [SwaggerUIBundle.presets.apis],
+            layout: "BaseLayout"
+        });
+    </script>
+</body>
+</html>
+"#.to_string())
+}
+
+async fn get_rate_limit_status(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.rate_limiter.get_status("127.0.0.1"))
+}
+
+async fn list_marketplace_plugins(
+    State(state): State<AppState>,
+    Json(query): Json<marketplace::PluginSearchQuery>,
+) -> impl IntoResponse {
+    Json(state.marketplace.list_plugins(Some(query)))
+}
+
+async fn get_marketplace_plugin(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match state.marketplace.get_plugin(&name) {
+        Some(plugin) => Ok(Json(plugin)),
+        None => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn install_marketplace_plugin(
+    State(state): State<AppState>,
+    Json(req): Json<marketplace::InstallRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match state.marketplace.install_plugin(&req.plugin_name, req.version.as_deref()) {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!("Failed to install plugin: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn get_marketplace_categories(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.marketplace.get_categories())
+}
+
+async fn get_marketplace_tags(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.marketplace.get_tags(20))
+}
+
+async fn get_featured_plugins(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.marketplace.get_featured_plugins(5))
+}
+
+async fn get_recent_plugins(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.marketplace.get_recently_updated(5))
+}
+
+async fn get_marketplace_stats(State(state): State<AppState>) -> impl IntoResponse {
+    Json(state.marketplace.get_stats())
 }

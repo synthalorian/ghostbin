@@ -52,7 +52,7 @@ AI-assisted reverse engineering. Rust + Axum. Fully offline. No cloud.
 - [x] YARA rule integration for signature matching
 - [x] Tests for all new architecture modules
 
-## v0.6.0 — Interactive Analysis
+## v0.6.0 — Interactive Analysis (Complete)
 
 - [x] Interactive graph view API (pan, zoom, node selection)
 - [x] Diff two binaries — compare functions, strings, sections
@@ -62,6 +62,17 @@ AI-assisted reverse engineering. Rust + Axum. Fully offline. No cloud.
 - [x] Session persistence — save analysis state to SQLite
 - [x] Batch analysis — process multiple binaries via API
 - [x] Performance: analyze 10MB binaries in under 5 seconds
+
+## v0.7.0 — Pre-Release Polish ✅
+
+- [x] Decompiler improvements — better C-like output, type inference
+- [x] Plugin marketplace — discover and install community analyzers
+- [x] API documentation — OpenAPI spec with examples
+- [x] Security hardening — input validation, rate limiting, sandboxing
+- [ ] IDA/Ghidra database import — .i64, .gpr file parsing (deferred to v1.0.0)
+- [ ] Web UI overhaul — modern frontend with React/Vue (deferred to v1.0.0)
+- [ ] Collaborative sessions — share analysis sessions via invite links (deferred to v1.0.0)
+- [ ] Fuzzing integration — generate inputs and track coverage (deferred to v1.0.0)
 
 ## v1.0.0 — Ship It
 

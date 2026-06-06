@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use petgraph::graph::DiGraph;
 use petgraph::dot::{Dot, Config};
 use serde::{Deserialize, Serialize};

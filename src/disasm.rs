@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use capstone::prelude::*;
 
 #[derive(Debug, Clone)]
