@@ -1,32 +1,38 @@
 use axum::{
-    routing::{get, post},
-    Router,
-    extract::{State, Json, Path, WebSocketUpgrade},
-    response::IntoResponse,
+    extract::{Path, State, Json, WebSocketUpgrade},
     http::StatusCode,
+    response::IntoResponse,
+    routing::{delete, get, post},
+    Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{info, error};
+use tracing::{error, info};
 
-mod binary;
-mod disasm;
-mod decompiler;
-mod graph;
 mod annotations;
+mod binary;
+mod decompiler;
+mod disasm;
+mod export;
+mod graph;
 mod llm;
+mod plugin;
 mod websocket;
 
 use binary::BinaryAnalyzer;
 use annotations::AnnotationStore;
 use llm::LlmClient;
+use plugin::PluginManager;
+use websocket::WsHub;
 
 #[derive(Clone)]
 struct AppState {
     analyzer: Arc<RwLock<BinaryAnalyzer>>,
     annotations: Arc<RwLock<AnnotationStore>>,
     llm: Arc<LlmClient>,
+    hub: Arc<WsHub>,
+    plugins: Arc<PluginManager>,
 }
 
 #[tokio::main]
@@ -36,7 +42,12 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         analyzer: Arc::new(RwLock::new(BinaryAnalyzer::new())),
         annotations: Arc::new(RwLock::new(AnnotationStore::new()?)),
-        llm: Arc::new(LlmClient::new("http://localhost:8080".to_string(), "default".to_string())),
+        llm: Arc::new(LlmClient::new(
+            "http://localhost:8080".to_string(),
+            "default".to_string(),
+        )),
+        hub: Arc::new(WsHub::new()),
+        plugins: Arc::new(PluginManager::new()),
     };
 
     let app = Router::new()
@@ -53,12 +64,19 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/binary/:id/function/:addr/decompile", post(decompile_function))
         .route("/api/binary/:id/function/:addr/analyze", post(ai_analyze))
         .route("/api/annotations/:addr", get(get_annotation).post(add_annotation))
+        .route("/api/annotations/:addr/threads", get(get_annotation_threads))
+        .route("/api/export/:id/markdown", post(export_markdown))
+        .route("/api/export/:id/pdf", post(export_pdf))
+        .route("/api/plugins/load", post(load_plugin))
+        .route("/api/plugins/list", get(list_plugins))
+        .route("/api/plugins/:name/analyze", post(run_plugin))
+        .route("/api/plugins/:name", delete(unload_plugin))
         .route("/api/graph/:id/cfg", get(get_cfg))
         .route("/ws", get(websocket_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:8081").await?;
-    info!("👻 GhostBin listening on {}", listener.local_addr()?);
+    info!("GhostBin v0.3.0 listening on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -215,10 +233,19 @@ async fn add_annotation(
     Json(req): Json<AnnotationRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut store = state.annotations.write().await;
-    match store.add(&addr, req.text, req.author).await {
+    match store.add(&addr, req.text, req.author, req.parent_id).await {
         Ok(_) => Ok(StatusCode::CREATED),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
+}
+
+async fn get_annotation_threads(
+    State(state): State<AppState>,
+    Path(addr): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let store = state.annotations.read().await;
+    let threads = store.get_threads(&addr);
+    Ok(Json(threads))
 }
 
 async fn get_cfg(
@@ -237,6 +264,157 @@ async fn websocket_handler(
     State(state): State<AppState>,
 ) -> impl IntoResponse {
     ws.on_upgrade(|socket| websocket::handle_socket(socket, state))
+}
+
+async fn export_markdown(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    let annotations = state.annotations.read().await;
+
+    let binary = match analyzer.get_binary(&id) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let all_annotations: Vec<_> = binary
+        .functions
+        .iter()
+        .flat_map(|f| {
+            let addr = format!("0x{:x}", f.address);
+            annotations.get_threads(&addr)
+        })
+        .collect();
+
+    let report = export::AnalysisReport {
+        binary_name: binary.name.clone(),
+        binary_id: id.clone(),
+        architecture: binary.architecture.as_str().to_string(),
+        entry_point: format!("0x{:x}", binary.entry_point),
+        functions: binary.functions.clone(),
+        sections: binary.sections.clone(),
+        symbols: binary.symbols.clone(),
+        imports: binary.imports.clone(),
+        exports: binary.exports.clone(),
+        annotations: all_annotations,
+        analysis_text: None,
+    };
+
+    let markdown = export::export_markdown(&report);
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/markdown; charset=utf-8",
+        )],
+        markdown,
+    ))
+}
+
+async fn export_pdf(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    let annotations = state.annotations.read().await;
+
+    let binary = match analyzer.get_binary(&id) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let all_annotations: Vec<_> = binary
+        .functions
+        .iter()
+        .flat_map(|f| {
+            let addr = format!("0x{:x}", f.address);
+            annotations.get_threads(&addr)
+        })
+        .collect();
+
+    let report = export::AnalysisReport {
+        binary_name: binary.name.clone(),
+        binary_id: id.clone(),
+        architecture: binary.architecture.as_str().to_string(),
+        entry_point: format!("0x{:x}", binary.entry_point),
+        functions: binary.functions.clone(),
+        sections: binary.sections.clone(),
+        symbols: binary.symbols.clone(),
+        imports: binary.imports.clone(),
+        exports: binary.exports.clone(),
+        annotations: all_annotations,
+        analysis_text: None,
+    };
+
+    match export::export_pdf(&report) {
+        Ok(pdf_bytes) => {
+            let disposition = format!("attachment; filename=\"{}_report.pdf\"", binary.name);
+            let mut response = axum::response::Response::new(axum::body::Body::from(pdf_bytes));
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_TYPE,
+                "application/pdf".parse().unwrap(),
+            );
+            response.headers_mut().insert(
+                axum::http::header::CONTENT_DISPOSITION,
+                disposition.parse().unwrap(),
+            );
+            Ok(response)
+        }
+        Err(e) => {
+            error!("PDF export failed: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn load_plugin(
+    State(state): State<AppState>,
+    Json(req): Json<LoadPluginRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match state.plugins.load_plugin(&req.path) {
+        Ok(name) => Ok(Json(PluginResponse { name, version: "unknown".to_string() })),
+        Err(e) => {
+            error!("Failed to load plugin: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn list_plugins(
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let plugins = state.plugins.list_plugins();
+    Json(plugins)
+}
+
+async fn run_plugin(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<RunPluginRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    let binary = match analyzer.get_binary(&req.binary_id) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    match state.plugins.analyze(&name, &binary.data, &req.function_name) {
+        Ok(result) => Ok(Json(result)),
+        Err(e) => {
+            error!("Plugin analysis failed: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
+    }
+}
+
+async fn unload_plugin(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> Result<StatusCode, StatusCode> {
+    match state.plugins.unload_plugin(&name) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
 }
 
 // Request/Response types
@@ -266,4 +444,22 @@ struct AiAnalysisResponse {
 struct AnnotationRequest {
     text: String,
     author: String,
+    parent_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LoadPluginRequest {
+    path: String,
+}
+
+#[derive(Serialize)]
+struct PluginResponse {
+    name: String,
+    version: String,
+}
+
+#[derive(Deserialize)]
+struct RunPluginRequest {
+    binary_id: String,
+    function_name: String,
 }

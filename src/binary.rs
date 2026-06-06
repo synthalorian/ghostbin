@@ -83,6 +83,7 @@ pub enum BinaryFormat {
     Raw,
 }
 
+#[derive(Debug, Clone)]
 pub struct Binary {
     pub id: String,
     pub name: String,
@@ -880,6 +881,14 @@ impl BinaryAnalyzer {
         }
 
         functions
+    }
+
+    pub fn get_binary(&self, id: &str) -> anyhow::Result<Binary> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+        Ok(binary.clone())
     }
 
     pub fn get_functions(&self, id: &str) -> anyhow::Result<Vec<Function>> {
