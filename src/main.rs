@@ -48,6 +48,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/binary/:id/relocations", get(list_relocations))
         .route("/api/binary/:id/imports", get(list_imports))
         .route("/api/binary/:id/exports", get(list_exports))
+        .route("/api/binary/:id/resources", get(list_resources))
         .route("/api/binary/:id/function/:addr/disasm", get(get_disassembly))
         .route("/api/binary/:id/function/:addr/decompile", post(decompile_function))
         .route("/api/binary/:id/function/:addr/analyze", post(ai_analyze))
@@ -143,6 +144,17 @@ async fn list_exports(
     let analyzer = state.analyzer.read().await;
     match analyzer.get_exports(&id) {
         Ok(exports) => Ok(Json(exports)),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn list_resources(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    match analyzer.get_resources(&id) {
+        Ok(resources) => Ok(Json(resources)),
         Err(_) => Err(StatusCode::NOT_FOUND),
     }
 }

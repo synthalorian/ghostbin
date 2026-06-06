@@ -23,7 +23,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 
 # Binary analysis
-goblin = "0.8"          # ELF/Mach-O/PE parsing
+goblin = "0.10"          # ELF/Mach-O/PE parsing
 capstone = "0.12"       # Disassembly
 iced-x86 = "1.21"       # x86/x64 decoder
 

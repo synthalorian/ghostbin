@@ -58,6 +58,16 @@ pub struct Export {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct Resource {
+    pub resource_type: String,
+    pub name: String,
+    pub id: u32,
+    pub size: u32,
+    pub rva: u32,
+    pub language: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Instruction {
     pub address: u64,
     pub bytes: Vec<u8>,
@@ -86,6 +96,7 @@ pub struct Binary {
     pub functions: Vec<Function>,
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,
+    pub resources: Vec<Resource>,
 }
 
 pub struct BinaryAnalyzer {
@@ -116,6 +127,7 @@ impl BinaryAnalyzer {
             functions: Vec::new(),
             imports: Vec::new(),
             exports: Vec::new(),
+            resources: Vec::new(),
         };
 
         // Parse the object format first (clone data to avoid borrow issues)
@@ -490,12 +502,73 @@ impl BinaryAnalyzer {
             }
         }
 
+        if let Some(resource_data) = pe.resource_data {
+            binary.resources = Self::parse_pe_resources(&resource_data, &binary.data, &pe.sections, pe.header.coff_header.machine);
+        }
+
         // Function boundary detection for PE
         if binary.functions.is_empty() {
             binary.functions = Self::detect_pe_function_boundaries(binary);
         }
 
         Ok(())
+    }
+
+    fn parse_pe_resources(
+        resource_data: &goblin::pe::resource::ResourceData,
+        _data: &[u8],
+        _sections: &[goblin::pe::section_table::SectionTable],
+        _machine: u16,
+    ) -> Vec<Resource> {
+        let mut resources = Vec::new();
+
+        for entry in resource_data.entries() {
+            if let Ok(entry) = entry {
+                let resource_type = if entry.name_is_string() {
+                    "named".to_string()
+                } else {
+                    match entry.id() {
+                        Some(goblin::pe::resource::RT_CURSOR) => "CURSOR",
+                        Some(goblin::pe::resource::RT_BITMAP) => "BITMAP",
+                        Some(goblin::pe::resource::RT_ICON) => "ICON",
+                        Some(goblin::pe::resource::RT_MENU) => "MENU",
+                        Some(goblin::pe::resource::RT_DIALOG) => "DIALOG",
+                        Some(goblin::pe::resource::RT_STRING) => "STRING",
+                        Some(goblin::pe::resource::RT_FONTDIR) => "FONTDIR",
+                        Some(goblin::pe::resource::RT_FONT) => "FONT",
+                        Some(goblin::pe::resource::RT_ACCELERATOR) => "ACCELERATOR",
+                        Some(goblin::pe::resource::RT_RCDATA) => "RCDATA",
+                        Some(goblin::pe::resource::RT_MESSAGETABLE) => "MESSAGETABLE",
+                        Some(goblin::pe::resource::RT_GROUP_CURSOR) => "GROUP_CURSOR",
+                        Some(goblin::pe::resource::RT_GROUP_ICON) => "GROUP_ICON",
+                        Some(goblin::pe::resource::RT_VERSION) => "VERSION",
+                        Some(goblin::pe::resource::RT_DLGINCLUDE) => "DLGINCLUDE",
+                        Some(goblin::pe::resource::RT_PLUGPLAY) => "PLUGPLAY",
+                        Some(goblin::pe::resource::RT_VXD) => "VXD",
+                        Some(goblin::pe::resource::RT_ANICURSOR) => "ANICURSOR",
+                        Some(goblin::pe::resource::RT_ANIICON) => "ANIICON",
+                        Some(goblin::pe::resource::RT_HTML) => "HTML",
+                        Some(goblin::pe::resource::RT_MANIFEST) => "MANIFEST",
+                        _ => "UNKNOWN",
+                    }.to_string()
+                };
+
+                resources.push(Resource {
+                    resource_type,
+                    name: if entry.name_is_string() {
+                        format!("0x{:x}", entry.name_offset())
+                    } else {
+                        entry.id().map(|id| id.to_string()).unwrap_or_default()
+                    },
+                    id: entry.name_or_id,
+                    size: 0,
+                    rva: entry.offset_to_data_or_directory,
+                    language: 0,
+                });
+            }
+        }
+
+        resources
     }
 
     fn detect_elf_function_boundaries(
@@ -855,6 +928,14 @@ impl BinaryAnalyzer {
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
         Ok(binary.exports.clone())
+    }
+
+    pub fn get_resources(&self, id: &str) -> anyhow::Result<Vec<Resource>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+        Ok(binary.resources.clone())
     }
 
     pub fn disassemble_function(
