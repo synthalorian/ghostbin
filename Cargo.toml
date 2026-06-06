@@ -1,6 +1,6 @@
 [package]
 name = "ghostbin"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["synthalorian <synthalorian@gmail.com>"]
 description = "AI-assisted reverse engineering tool with local LLMs"
@@ -33,6 +33,15 @@ reqwest = { version = "0.11", features = ["json"] }
 # Graph data structures
 petgraph = "0.6"
 
+# Export / Reporting
+genpdf = "0.2"
+
+# Plugin system
+libloading = "0.8"
+
+# Utilities
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
