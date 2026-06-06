@@ -90,6 +90,7 @@ impl WsHub {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn user_count(&self) -> usize {
         self.users.read().await.len()
     }

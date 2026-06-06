@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::decompiler::Decompiler;
 use crate::disasm::{Architecture, Disassembler, DisasmInstruction};
 use crate::graph::layout_graph;
+use crate::strings::{extract_strings, filter_strings, BinaryString};
 use petgraph::graph::DiGraph;
 
 #[derive(Debug, Clone, Serialize)]
@@ -85,6 +86,7 @@ pub enum BinaryFormat {
 
 #[derive(Debug, Clone)]
 pub struct Binary {
+    #[allow(dead_code)]
     pub id: String,
     pub name: String,
     pub data: Vec<u8>,
@@ -226,14 +228,15 @@ impl BinaryAnalyzer {
                                 section_index: sym.st_shndx as u16,
                             });
 
-                            if sym.st_type() == 2 && sym.st_value != 0 {
-                                if !binary.functions.iter().any(|f| f.address == sym.st_value) {
-                                    binary.functions.push(Function {
-                                        address: sym.st_value,
-                                        name: name.to_string(),
-                                        size: sym.st_size,
-                                    });
-                                }
+                            if sym.st_type() == 2
+                                && sym.st_value != 0
+                                && !binary.functions.iter().any(|f| f.address == sym.st_value)
+                            {
+                                binary.functions.push(Function {
+                                    address: sym.st_value,
+                                    name: name.to_string(),
+                                    size: sym.st_size,
+                                });
                             }
                         }
                     }
@@ -346,24 +349,21 @@ impl BinaryAnalyzer {
                         name: seg_name.clone(),
                         address: segment.vmaddr,
                         size: segment.vmsize,
-                        offset: segment.fileoff as u64,
+                        offset: segment.fileoff,
                         flags: segment.maxprot as u64,
                         section_type: "segment".to_string(),
                     });
 
-                    // Parse sections within segment
-                    for section_result in segment.into_iter() {
-                        if let Ok((section, _data)) = section_result {
-                            let sect_name = section.name().unwrap_or("").to_string();
-                            binary.sections.push(Section {
-                                name: format!("{}/{}", sect_name, seg_name),
-                                address: section.addr,
-                                size: section.size,
-                                offset: section.offset as u64,
-                                flags: section.flags as u64,
-                                section_type: format!("0x{:x}", section.flags),
-                            });
-                        }
+                    for (section, _data) in segment.into_iter().flatten() {
+                        let sect_name = section.name().unwrap_or("").to_string();
+                        binary.sections.push(Section {
+                            name: format!("{}/{}", sect_name, seg_name),
+                            address: section.addr,
+                            size: section.size,
+                            offset: section.offset as u64,
+                            flags: section.flags as u64,
+                            section_type: format!("0x{:x}", section.flags),
+                        });
                     }
                 }
 
@@ -411,14 +411,14 @@ impl BinaryAnalyzer {
                             s.name.contains("__text") && s.address <= addr && addr < s.address + s.size
                         });
                         
-                        if is_text || name.starts_with('_') {
-                            if !binary.functions.iter().any(|f| f.address == addr) {
-                                binary.functions.push(Function {
-                                    address: addr,
-                                    name: name.clone(),
-                                    size: 0,
-                                });
-                            }
+                        if (is_text || name.starts_with('_'))
+                            && !binary.functions.iter().any(|f| f.address == addr)
+                        {
+                            binary.functions.push(Function {
+                                address: addr,
+                                name: name.clone(),
+                                size: 0,
+                            });
                         }
                     }
                 }
@@ -523,50 +523,48 @@ impl BinaryAnalyzer {
     ) -> Vec<Resource> {
         let mut resources = Vec::new();
 
-        for entry in resource_data.entries() {
-            if let Ok(entry) = entry {
-                let resource_type = if entry.name_is_string() {
-                    "named".to_string()
-                } else {
-                    match entry.id() {
-                        Some(goblin::pe::resource::RT_CURSOR) => "CURSOR",
-                        Some(goblin::pe::resource::RT_BITMAP) => "BITMAP",
-                        Some(goblin::pe::resource::RT_ICON) => "ICON",
-                        Some(goblin::pe::resource::RT_MENU) => "MENU",
-                        Some(goblin::pe::resource::RT_DIALOG) => "DIALOG",
-                        Some(goblin::pe::resource::RT_STRING) => "STRING",
-                        Some(goblin::pe::resource::RT_FONTDIR) => "FONTDIR",
-                        Some(goblin::pe::resource::RT_FONT) => "FONT",
-                        Some(goblin::pe::resource::RT_ACCELERATOR) => "ACCELERATOR",
-                        Some(goblin::pe::resource::RT_RCDATA) => "RCDATA",
-                        Some(goblin::pe::resource::RT_MESSAGETABLE) => "MESSAGETABLE",
-                        Some(goblin::pe::resource::RT_GROUP_CURSOR) => "GROUP_CURSOR",
-                        Some(goblin::pe::resource::RT_GROUP_ICON) => "GROUP_ICON",
-                        Some(goblin::pe::resource::RT_VERSION) => "VERSION",
-                        Some(goblin::pe::resource::RT_DLGINCLUDE) => "DLGINCLUDE",
-                        Some(goblin::pe::resource::RT_PLUGPLAY) => "PLUGPLAY",
-                        Some(goblin::pe::resource::RT_VXD) => "VXD",
-                        Some(goblin::pe::resource::RT_ANICURSOR) => "ANICURSOR",
-                        Some(goblin::pe::resource::RT_ANIICON) => "ANIICON",
-                        Some(goblin::pe::resource::RT_HTML) => "HTML",
-                        Some(goblin::pe::resource::RT_MANIFEST) => "MANIFEST",
-                        _ => "UNKNOWN",
-                    }.to_string()
-                };
+        for entry in resource_data.entries().flatten() {
+            let resource_type = if entry.name_is_string() {
+                "named".to_string()
+            } else {
+                match entry.id() {
+                    Some(goblin::pe::resource::RT_CURSOR) => "CURSOR",
+                    Some(goblin::pe::resource::RT_BITMAP) => "BITMAP",
+                    Some(goblin::pe::resource::RT_ICON) => "ICON",
+                    Some(goblin::pe::resource::RT_MENU) => "MENU",
+                    Some(goblin::pe::resource::RT_DIALOG) => "DIALOG",
+                    Some(goblin::pe::resource::RT_STRING) => "STRING",
+                    Some(goblin::pe::resource::RT_FONTDIR) => "FONTDIR",
+                    Some(goblin::pe::resource::RT_FONT) => "FONT",
+                    Some(goblin::pe::resource::RT_ACCELERATOR) => "ACCELERATOR",
+                    Some(goblin::pe::resource::RT_RCDATA) => "RCDATA",
+                    Some(goblin::pe::resource::RT_MESSAGETABLE) => "MESSAGETABLE",
+                    Some(goblin::pe::resource::RT_GROUP_CURSOR) => "GROUP_CURSOR",
+                    Some(goblin::pe::resource::RT_GROUP_ICON) => "GROUP_ICON",
+                    Some(goblin::pe::resource::RT_VERSION) => "VERSION",
+                    Some(goblin::pe::resource::RT_DLGINCLUDE) => "DLGINCLUDE",
+                    Some(goblin::pe::resource::RT_PLUGPLAY) => "PLUGPLAY",
+                    Some(goblin::pe::resource::RT_VXD) => "VXD",
+                    Some(goblin::pe::resource::RT_ANICURSOR) => "ANICURSOR",
+                    Some(goblin::pe::resource::RT_ANIICON) => "ANIICON",
+                    Some(goblin::pe::resource::RT_HTML) => "HTML",
+                    Some(goblin::pe::resource::RT_MANIFEST) => "MANIFEST",
+                    _ => "UNKNOWN",
+                }.to_string()
+            };
 
-                resources.push(Resource {
-                    resource_type,
-                    name: if entry.name_is_string() {
-                        format!("0x{:x}", entry.name_offset())
-                    } else {
-                        entry.id().map(|id| id.to_string()).unwrap_or_default()
-                    },
-                    id: entry.name_or_id,
-                    size: 0,
-                    rva: entry.offset_to_data_or_directory,
-                    language: 0,
-                });
-            }
+            resources.push(Resource {
+                resource_type,
+                name: if entry.name_is_string() {
+                    format!("0x{:x}", entry.name_offset())
+                } else {
+                    entry.id().map(|id| id.to_string()).unwrap_or_default()
+                },
+                id: entry.name_or_id,
+                size: 0,
+                rva: entry.offset_to_data_or_directory,
+                language: 0,
+            });
         }
 
         resources
@@ -947,6 +945,42 @@ impl BinaryAnalyzer {
         Ok(binary.resources.clone())
     }
 
+    pub fn get_strings(
+        &self,
+        id: &str,
+        min_len: usize,
+        pattern: Option<&str>,
+    ) -> anyhow::Result<Vec<BinaryString>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+
+        let base_addr = match binary.format {
+            super::binary::BinaryFormat::Elf | super::binary::BinaryFormat::Pe => 0,
+            super::binary::BinaryFormat::MachO => 0,
+            super::binary::BinaryFormat::Raw => 0,
+        };
+
+        let mut strings = extract_strings(&binary.data, base_addr);
+
+        for func in &binary.functions {
+            if let Ok(instructions) = self.disassemble_function(id, &format!("0x{:x}", func.address)) {
+                let insn_refs: Vec<(u64, String, String)> = instructions
+                    .into_iter()
+                    .map(|i| (i.address, i.mnemonic, i.operands))
+                    .collect();
+                crate::strings::find_string_xrefs(&mut strings, &insn_refs);
+            }
+        }
+
+        Ok(filter_strings(&strings, min_len, pattern))
+    }
+
+    pub fn binary_count(&self) -> usize {
+        self.binaries.len()
+    }
+
     pub fn disassemble_function(
         &self,
         id: &str,
@@ -995,11 +1029,10 @@ impl BinaryAnalyzer {
                                 } else {
                                     max_size
                                 };
-                                return Ok(
-                                    Self::disassemble_bytes(&binary.data[file_offset..file_offset + size],
-                                        address,
-                                        binary.architecture,
-                                    )?
+                                return Self::disassemble_bytes(
+                                    &binary.data[file_offset..file_offset + size],
+                                    address,
+                                    binary.architecture,
                                 );
                             }
                         }

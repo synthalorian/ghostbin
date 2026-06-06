@@ -12,6 +12,7 @@ pub struct AnalysisReport {
     pub entry_point: String,
     pub functions: Vec<Function>,
     pub sections: Vec<Section>,
+    #[allow(dead_code)]
     pub symbols: Vec<Symbol>,
     pub imports: Vec<Import>,
     pub exports: Vec<Export>,

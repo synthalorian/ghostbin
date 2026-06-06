@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State, Json, WebSocketUpgrade},
+    extract::{Path, State, Json, WebSocketUpgrade, Query},
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
@@ -12,16 +12,19 @@ use tracing::{error, info};
 
 mod annotations;
 mod binary;
+mod config;
 mod decompiler;
 mod disasm;
 mod export;
 mod graph;
 mod llm;
 mod plugin;
+mod strings;
 mod websocket;
 
 use binary::BinaryAnalyzer;
 use annotations::AnnotationStore;
+use config::Config;
 use llm::LlmClient;
 use plugin::PluginManager;
 use websocket::WsHub;
@@ -33,25 +36,42 @@ struct AppState {
     llm: Arc<LlmClient>,
     hub: Arc<WsHub>,
     plugins: Arc<PluginManager>,
+    config: Arc<Config>,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    let config = match Config::load("ghostbin.toml") {
+        Ok(cfg) => {
+            info!("Loaded configuration from ghostbin.toml");
+            cfg
+        }
+        Err(e) => {
+            info!("Using default configuration (failed to load ghostbin.toml: {})", e);
+            Config::default()
+        }
+    };
+
+    let llm = Arc::new(LlmClient::new(
+        config.llm.base_url.clone(),
+        config.llm.model.clone(),
+    ));
+
     let state = AppState {
         analyzer: Arc::new(RwLock::new(BinaryAnalyzer::new())),
         annotations: Arc::new(RwLock::new(AnnotationStore::new()?)),
-        llm: Arc::new(LlmClient::new(
-            "http://localhost:8080".to_string(),
-            "default".to_string(),
-        )),
+        llm,
         hub: Arc::new(WsHub::new()),
         plugins: Arc::new(PluginManager::new()),
+        config: Arc::new(config.clone()),
     };
 
     let app = Router::new()
         .route("/", get(serve_ui))
+        .route("/api/status", get(get_status))
+        .route("/api/config", get(get_config))
         .route("/api/binary/load", post(load_binary))
         .route("/api/binary/:id/functions", get(list_functions))
         .route("/api/binary/:id/sections", get(list_sections))
@@ -60,6 +80,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/binary/:id/imports", get(list_imports))
         .route("/api/binary/:id/exports", get(list_exports))
         .route("/api/binary/:id/resources", get(list_resources))
+        .route("/api/binary/:id/strings", get(list_strings))
         .route("/api/binary/:id/function/:addr/disasm", get(get_disassembly))
         .route("/api/binary/:id/function/:addr/decompile", post(decompile_function))
         .route("/api/binary/:id/function/:addr/analyze", post(ai_analyze))
@@ -75,8 +96,9 @@ async fn main() -> anyhow::Result<()> {
         .route("/ws", get(websocket_handler))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:8081").await?;
-    info!("GhostBin v0.3.0 listening on {}", listener.local_addr()?);
+    let bind_addr = format!("{}:{}", config.bind_addr, config.port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    info!("GhostBin v0.4.0 listening on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -84,6 +106,32 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve_ui() -> impl IntoResponse {
     axum::response::Html(include_str!("../static/index.html"))
+}
+
+async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
+    let analyzer = state.analyzer.read().await;
+    let binary_count = analyzer.binary_count();
+    let annotations = state.annotations.read().await;
+    let annotation_count = annotations.annotation_count();
+
+    Json(StatusResponse {
+        version: "0.4.0".to_string(),
+        status: "healthy".to_string(),
+        binaries_loaded: binary_count,
+        annotation_count,
+        plugins_loaded: state.plugins.list_plugins().len(),
+        websocket_users: state.hub.user_count().await,
+    })
+}
+
+async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
+    Json(ConfigResponse {
+        bind_addr: state.config.bind_addr.clone(),
+        port: state.config.port,
+        llm_provider: state.config.llm.provider.clone(),
+        llm_model: state.config.llm.model.clone(),
+        analysis: state.config.analysis.clone(),
+    })
 }
 
 async fn load_binary(
@@ -173,6 +221,20 @@ async fn list_resources(
     let analyzer = state.analyzer.read().await;
     match analyzer.get_resources(&id) {
         Ok(resources) => Ok(Json(resources)),
+        Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn list_strings(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Query(params): Query<StringQueryParams>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let analyzer = state.analyzer.read().await;
+    let min_len = params.min_len.unwrap_or(state.config.analysis.min_string_length);
+
+    match analyzer.get_strings(&id, min_len, params.pattern.as_deref()) {
+        Ok(strings) => Ok(Json(strings)),
         Err(_) => Err(StatusCode::NOT_FOUND),
     }
 }
@@ -278,6 +340,7 @@ async fn export_markdown(
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
 
+    let max_funcs = state.config.analysis.max_report_functions;
     let all_annotations: Vec<_> = binary
         .functions
         .iter()
@@ -292,7 +355,7 @@ async fn export_markdown(
         binary_id: id.clone(),
         architecture: binary.architecture.as_str().to_string(),
         entry_point: format!("0x{:x}", binary.entry_point),
-        functions: binary.functions.clone(),
+        functions: binary.functions[..binary.functions.len().min(max_funcs)].to_vec(),
         sections: binary.sections.clone(),
         symbols: binary.symbols.clone(),
         imports: binary.imports.clone(),
@@ -323,6 +386,7 @@ async fn export_pdf(
         Err(_) => return Err(StatusCode::NOT_FOUND),
     };
 
+    let max_funcs = state.config.analysis.max_report_functions;
     let all_annotations: Vec<_> = binary
         .functions
         .iter()
@@ -337,7 +401,7 @@ async fn export_pdf(
         binary_id: id.clone(),
         architecture: binary.architecture.as_str().to_string(),
         entry_point: format!("0x{:x}", binary.entry_point),
-        functions: binary.functions.clone(),
+        functions: binary.functions[..binary.functions.len().min(max_funcs)].to_vec(),
         sections: binary.sections.clone(),
         symbols: binary.symbols.clone(),
         imports: binary.imports.clone(),
@@ -462,4 +526,29 @@ struct PluginResponse {
 struct RunPluginRequest {
     binary_id: String,
     function_name: String,
+}
+
+#[derive(Serialize)]
+struct StatusResponse {
+    version: String,
+    status: String,
+    binaries_loaded: usize,
+    annotation_count: usize,
+    plugins_loaded: usize,
+    websocket_users: usize,
+}
+
+#[derive(Serialize)]
+struct ConfigResponse {
+    bind_addr: String,
+    port: u16,
+    llm_provider: String,
+    llm_model: String,
+    analysis: config::AnalysisConfig,
+}
+
+#[derive(Deserialize)]
+struct StringQueryParams {
+    min_len: Option<usize>,
+    pattern: Option<String>,
 }

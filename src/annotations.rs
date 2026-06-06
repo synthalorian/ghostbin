@@ -86,12 +86,13 @@ impl AnnotationStore {
 
         self.annotations
             .entry(address.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(annotation);
 
         Ok(id)
     }
 
+    #[allow(dead_code)]
     pub fn delete(&mut self, annotation_id: &str) -> anyhow::Result<()> {
         for list in self.annotations.values_mut() {
             if let Some(pos) = list.iter().position(|a| a.id == annotation_id) {
@@ -102,7 +103,12 @@ impl AnnotationStore {
         anyhow::bail!("Annotation not found: {}", annotation_id)
     }
 
+    #[allow(dead_code)]
     pub fn get_all(&self) -> &HashMap<String, Vec<Annotation>> {
         &self.annotations
+    }
+
+    pub fn annotation_count(&self) -> usize {
+        self.annotations.values().map(|v| v.len()).sum()
     }
 }

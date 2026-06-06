@@ -7,6 +7,7 @@ use crate::disasm::DisasmInstruction;
 pub struct BasicBlock {
     pub address: u64,
     pub instructions: Vec<DisasmInstruction>,
+    #[allow(dead_code)]
     pub pseudo_code: String,
 }
 
@@ -15,11 +16,13 @@ pub enum EdgeType {
     Fallthrough,
     Branch,
     Call,
+    #[allow(dead_code)]
     Return,
 }
 
 pub struct ControlFlowGraph {
     pub graph: DiGraph<BasicBlock, EdgeType>,
+    #[allow(dead_code)]
     pub entry: NodeIndex,
 }
 
@@ -69,10 +72,10 @@ impl Decompiler {
             }
 
             // Instruction after branch/call/return is a leader
-            if is_branch || is_call || is_return || is_unconditional_jump {
-                if i + 1 < instructions.len() {
-                    leaders.insert(instructions[i + 1].address);
-                }
+            if (is_branch || is_call || is_return || is_unconditional_jump)
+                && i + 1 < instructions.len()
+            {
+                leaders.insert(instructions[i + 1].address);
             }
         }
 
@@ -269,8 +272,8 @@ impl Decompiler {
                 .trim_end_matches(']')
                 .trim_end_matches(',')
                 .trim_end_matches(']');
-            if clean.starts_with("0x") {
-                if let Ok(addr) = u64::from_str_radix(&clean[2..], 16) {
+            if let Some(hex_str) = clean.strip_prefix("0x") {
+                if let Ok(addr) = u64::from_str_radix(hex_str, 16) {
                     return Some(addr);
                 }
             }
@@ -284,10 +287,8 @@ impl Decompiler {
     ) -> Option<u64> {
         let mut next_addr = None;
         for &addr in addr_to_node.keys() {
-            if addr > current_addr {
-                if next_addr.is_none() || addr < next_addr.unwrap() {
-                    next_addr = Some(addr);
-                }
+            if addr > current_addr && (next_addr.is_none() || addr < next_addr.unwrap()) {
+                next_addr = Some(addr);
             }
         }
         next_addr

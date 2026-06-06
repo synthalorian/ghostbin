@@ -56,6 +56,7 @@ impl Architecture {
 
 pub struct Disassembler {
     cs: Capstone,
+    #[allow(dead_code)]
     arch: Architecture,
 }
 
@@ -88,6 +89,7 @@ impl Disassembler {
         Ok(Disassembler { cs, arch })
     }
 
+    #[allow(dead_code)]
     pub fn architecture(&self) -> Architecture {
         self.arch
     }

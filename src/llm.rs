@@ -1,4 +1,3 @@
-use reqwest;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
@@ -82,6 +81,7 @@ impl LlmClient {
             .unwrap_or_default())
     }
 
+    #[allow(dead_code)]
     pub async fn explain_instruction(&self, instruction: &str) -> anyhow::Result<String> {
         let prompt = format!(
             "Explain what this assembly instruction does in simple terms:\n{}\n\
