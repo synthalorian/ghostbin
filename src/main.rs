@@ -21,6 +21,7 @@ mod disasm;
 mod entropy;
 mod export;
 mod graph;
+mod idb;
 mod llm;
 mod marketplace;
 mod openapi;
@@ -126,6 +127,8 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/graph/:id/cfg", get(get_cfg))
         .route("/api/graph/:id/callgraph", get(get_call_graph))
         .route("/api/graph/:id/interactive", post(update_interactive_graph))
+        .route("/api/import/database", post(import_database_handler))
+        .route("/api/import/:id/apply", post(apply_import_handler))
         .route("/api/binary/:id/entropy", get(get_entropy))
         .route("/api/binary/:id/signatures", get(get_signatures))
         .route("/api/binary/diff", post(diff_binaries))
@@ -160,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
 
     let bind_addr = format!("{}:{}", config.bind_addr, config.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    info!("GhostBin v0.7.0 listening on {}", listener.local_addr()?);
+    info!("GhostBin v1.0.0 listening on {}", listener.local_addr()?);
 
     axum::serve(listener, app).await?;
     Ok(())
@@ -182,7 +185,7 @@ async fn get_status(State(state): State<AppState>) -> impl IntoResponse {
     };
 
     Json(StatusResponse {
-        version: "0.7.0".to_string(),
+        version: "1.0.0".to_string(),
         status: "healthy".to_string(),
         binaries_loaded: binary_count,
         annotation_count,
@@ -838,6 +841,47 @@ async fn unload_plugin(
     match state.plugins.unload_plugin(&name) {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(_) => Err(StatusCode::NOT_FOUND),
+    }
+}
+
+async fn import_database_handler(
+    Json(req): Json<idb::ImportRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    match idb::import_database(&req.database_path) {
+        Ok(import) => Ok(Json(import)),
+        Err(e) => {
+            error!("Failed to import database: {}", e);
+            Err(StatusCode::UNPROCESSABLE_ENTITY)
+        }
+    }
+}
+
+async fn apply_import_handler(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<idb::ImportRequest>,
+) -> Result<impl IntoResponse, StatusCode> {
+    let import = match idb::import_database(&req.database_path) {
+        Ok(import) => import,
+        Err(e) => {
+            error!("Failed to import database: {}", e);
+            return Err(StatusCode::UNPROCESSABLE_ENTITY);
+        }
+    };
+
+    let mut analyzer = state.analyzer.write().await;
+    let binary = match analyzer.get_binary_mut(&id) {
+        Ok(b) => b,
+        Err(_) => return Err(StatusCode::NOT_FOUND),
+    };
+
+    let mut annotations = state.annotations.write().await;
+    match idb::apply_import(&import, binary, &mut annotations) {
+        Ok(summary) => Ok(Json(summary)),
+        Err(e) => {
+            error!("Failed to apply import: {}", e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 

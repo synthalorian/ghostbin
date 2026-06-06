@@ -910,6 +910,12 @@ impl BinaryAnalyzer {
         Ok(binary.clone())
     }
 
+    pub fn get_binary_mut(&mut self, id: &str) -> anyhow::Result<&mut Binary> {
+        self.binaries
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))
+    }
+
     pub fn get_functions(&self, id: &str) -> anyhow::Result<Vec<Function>> {
         let binary = self
             .binaries
