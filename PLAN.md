@@ -41,6 +41,28 @@ AI-assisted reverse engineering. Rust + Axum. Fully offline. No cloud.
 - [x] Comprehensive unit tests for all modules
 - [x] `/api/binary/:id/strings` endpoint with filtering
 
+## v0.5.0 — Multi-Architecture
+
+- [x] ARM32 disassembly support (Capstone ARM mode)
+- [x] ARM64 disassembly improvements (AArch64 specifics)
+- [x] Architecture auto-detection from binary header
+- [x] Cross-reference graph — visualize function call relationships
+- [x] Import/export table analysis for all formats
+- [x] Section entropy analysis for packed/encrypted detection
+- [x] YARA rule integration for signature matching
+- [x] Tests for all new architecture modules
+
+## v0.6.0 — Interactive Analysis
+
+- [x] Interactive graph view API (pan, zoom, node selection)
+- [x] Diff two binaries — compare functions, strings, sections
+- [x] Patch analysis — detect code changes between versions
+- [x] Symbol renaming API — user-defined function names
+- [x] Bookmark system — save interesting addresses
+- [x] Session persistence — save analysis state to SQLite
+- [x] Batch analysis — process multiple binaries via API
+- [x] Performance: analyze 10MB binaries in under 5 seconds
+
 ## v1.0.0 — Ship It
 
 - [ ] Multi-arch support: x86, x64, ARM64, ARM32

@@ -136,6 +136,65 @@ pub fn to_dot(graph: &DiGraph<String, String>) -> String {
     format!("{:?}", Dot::with_config(graph, &[Config::EdgeNoLabel]))
 }
 
+/// Interactive graph view state for pan, zoom, and node selection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InteractiveGraphState {
+    pub viewport_x: f64,
+    pub viewport_y: f64,
+    pub zoom: f64,
+    pub selected_nodes: Vec<String>,
+    pub highlighted_edges: Vec<(String, String)>,
+}
+
+impl Default for InteractiveGraphState {
+    fn default() -> Self {
+        InteractiveGraphState {
+            viewport_x: 0.0,
+            viewport_y: 0.0,
+            zoom: 1.0,
+            selected_nodes: Vec::new(),
+            highlighted_edges: Vec::new(),
+        }
+    }
+}
+
+impl InteractiveGraphState {
+    pub fn pan(&mut self, dx: f64, dy: f64) {
+        self.viewport_x += dx / self.zoom;
+        self.viewport_y += dy / self.zoom;
+    }
+
+    pub fn zoom_in(&mut self, factor: f64) {
+        self.zoom = (self.zoom * factor).min(10.0);
+    }
+
+    pub fn zoom_out(&mut self, factor: f64) {
+        self.zoom = (self.zoom / factor).max(0.1);
+    }
+
+    pub fn select_node(&mut self, node_id: String) {
+        if !self.selected_nodes.contains(&node_id) {
+            self.selected_nodes.push(node_id);
+        }
+    }
+
+    pub fn deselect_node(&mut self, node_id: &str) {
+        self.selected_nodes.retain(|n| n != node_id);
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected_nodes.clear();
+    }
+
+    pub fn highlight_path(&mut self, from: String, to: String) {
+        self.highlighted_edges.push((from, to));
+    }
+
+    pub fn clear_highlighted(&mut self) {
+        self.highlighted_edges.clear();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

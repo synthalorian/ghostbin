@@ -634,9 +634,6 @@ impl BinaryAnalyzer {
                         }
                     }
                     Architecture::Arm64 => {
-                        // ARM64 function prologues:
-                        // stp x29, x30, [sp, #-N]! (common)
-                        // sub sp, sp, #N
                         for i in (0..text_data.len()).step_by(4) {
                             if i + 3 < text_data.len() {
                                 let insn = u32::from_le_bytes([
@@ -645,9 +642,7 @@ impl BinaryAnalyzer {
                                     text_data[i + 2],
                                     text_data[i + 3],
                                 ]);
-                                // stp x29, x30, [sp, ...]
                                 let is_stp = (insn & 0x7f800000) == 0x29800000;
-                                // sub sp, sp, #imm
                                 let is_sub_sp = (insn & 0x7f800000) == 0x51000000 && ((insn >> 5) & 0x1f) == 31;
 
                                 if is_stp || is_sub_sp {
@@ -675,6 +670,32 @@ impl BinaryAnalyzer {
                                         address: addr,
                                         name: format!("sub_{:x}", addr),
                                         size,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Architecture::Arm32 => {
+                        for i in (0..text_data.len()).step_by(4) {
+                            if i + 3 < text_data.len() {
+                                let insn = u32::from_le_bytes([
+                                    text_data[i],
+                                    text_data[i + 1],
+                                    text_data[i + 2],
+                                    text_data[i + 3],
+                                ]);
+                                // ARM32 function prologues:
+                                // push {r11, lr} or stmfd sp!, {r11, lr}
+                                let is_push = (insn & 0x0FFF0000) == 0x092D0000;
+                                // sub sp, sp, #imm
+                                let is_sub_sp = (insn & 0x0FF00000) == 0x02400000 && ((insn >> 16) & 0xF) == 13;
+
+                                if is_push || is_sub_sp {
+                                    let addr = base_addr + i as u64;
+                                    functions.push(Function {
+                                        address: addr,
+                                        name: format!("sub_{:x}", addr),
+                                        size: 0,
                                     });
                                 }
                             }
@@ -1100,7 +1121,6 @@ impl BinaryAnalyzer {
             }));
         }
 
-        // Build CFG for the first function
         let first_func = &binary.functions[0];
         let disassembly = self.disassemble_function(id, &format!("0x{:x}", first_func.address))?;
 
@@ -1124,7 +1144,6 @@ impl BinaryAnalyzer {
 
         let cfg = decompiler.build_cfg(&disasm_instructions);
 
-        // Convert petgraph to our graph format
         let mut graph: DiGraph<String, String> = DiGraph::new();
         let mut node_map = HashMap::new();
 
@@ -1148,6 +1167,123 @@ impl BinaryAnalyzer {
 
         let graph_data = layout_graph(&graph);
         Ok(serde_json::to_value(graph_data)?)
+    }
+
+    pub fn get_call_graph(&self, id: &str) -> anyhow::Result<serde_json::Value> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
+        let mut node_ids = std::collections::HashSet::new();
+
+        for func in &binary.functions {
+            let func_addr = format!("0x{:x}", func.address);
+            if node_ids.insert(func_addr.clone()) {
+                nodes.push(serde_json::json!({
+                    "id": func_addr,
+                    "label": func.name,
+                    "address": func.address
+                }));
+            }
+
+            if let Ok(instructions) = self.disassemble_function(id, &func_addr) {
+                for insn in instructions {
+                    if insn.mnemonic.to_lowercase() == "call" || insn.mnemonic.to_lowercase() == "bl" {
+                        if let Some(target_addr) = Self::extract_call_target(&insn.operands) {
+                            let target_str = format!("0x{:x}", target_addr);
+                            if node_ids.insert(target_str.clone()) {
+                                if let Some(target_func) = binary.functions.iter().find(|f| f.address == target_addr) {
+                                    nodes.push(serde_json::json!({
+                                        "id": target_str,
+                                        "label": &target_func.name,
+                                        "address": target_addr
+                                    }));
+                                }
+                            }
+                            edges.push(serde_json::json!({
+                                "from": func_addr,
+                                "to": target_str,
+                                "type": "call"
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "nodes": nodes,
+            "edges": edges
+        }))
+    }
+
+    fn extract_call_target(operands: &str) -> Option<u64> {
+        for part in operands.split_whitespace() {
+            let clean = part
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_end_matches(',');
+            if let Some(hex_str) = clean.strip_prefix("0x") {
+                if let Ok(addr) = u64::from_str_radix(hex_str, 16) {
+                    return Some(addr);
+                }
+            }
+        }
+        None
+    }
+
+    pub fn get_entropy(&self, id: &str) -> anyhow::Result<Vec<crate::entropy::SectionEntropy>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+
+        let sections: Vec<(String, u64, u64, u64)> = binary.sections.iter()
+            .map(|s| (s.name.clone(), s.address, s.size, s.offset))
+            .collect();
+
+        Ok(crate::entropy::analyze_sections(&sections, &binary.data))
+    }
+
+    pub fn scan_signatures(&self, id: &str) -> anyhow::Result<Vec<crate::yara::SignatureMatch>> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+
+        let rules = crate::yara::built_in_rules();
+        Ok(crate::yara::scan(&binary.data, &rules))
+    }
+
+    pub fn rename_symbol(&mut self, id: &str, old_name: &str, new_name: &str) -> anyhow::Result<()> {
+        let binary = self
+            .binaries
+            .get_mut(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+
+        let mut found = false;
+        for symbol in &mut binary.symbols {
+            if symbol.name == old_name {
+                symbol.name = new_name.to_string();
+                found = true;
+            }
+        }
+
+        for func in &mut binary.functions {
+            if func.name == old_name {
+                func.name = new_name.to_string();
+                found = true;
+            }
+        }
+
+        if !found {
+            anyhow::bail!("Symbol '{}' not found", old_name);
+        }
+
+        Ok(())
     }
 }
 

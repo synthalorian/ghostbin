@@ -1,6 +1,6 @@
 [package]
 name = "ghostbin"
-version = "0.4.0"
+version = "0.6.0"
 edition = "2021"
 authors = ["synthalorian <synthalorian@gmail.com>"]
 description = "AI-assisted reverse engineering tool with local LLMs"
@@ -44,6 +44,15 @@ uuid = { version = "1.6", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 toml = "0.8"
+
+# Database
+rusqlite = { version = "0.30", features = ["bundled"] }
+
+# Parallel processing
+rayon = "1.8"
+
+# Hashing for diff
+sha2 = "0.10"
 
 [dev-dependencies]
 tokio-test = "0.4"
