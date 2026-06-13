@@ -191,7 +191,7 @@ async fn handle_client_message(
             parent_id,
         } => {
             let mut store = state.annotations.write().await;
-            store.add(&address, text, author, parent_id).await?;
+            store.add(&address, text, author, parent_id)?;
             let threads = store.get_threads(&address);
             let update = WsMessage::AnnotationUpdate { address, threads };
             state.hub.broadcast(update);

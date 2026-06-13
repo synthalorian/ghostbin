@@ -42,7 +42,7 @@ impl Default for RateLimitConfig {
                 "dylib".to_string(),
                 "elf".to_string(),
                 "bin".to_string(),
-                "".to_string(), // Allow extensionless files
+                String::new(), // Allow extensionless files
             ],
         }
     }

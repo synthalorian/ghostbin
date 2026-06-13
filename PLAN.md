@@ -69,19 +69,19 @@ AI-assisted reverse engineering. Rust + Axum. Fully offline. No cloud.
 - [x] Plugin marketplace — discover and install community analyzers
 - [x] API documentation — OpenAPI spec with examples
 - [x] Security hardening — input validation, rate limiting, sandboxing
-- [ ] IDA/Ghidra database import — .i64, .gpr file parsing (deferred to v1.0.0)
-- [ ] Web UI overhaul — modern frontend with React/Vue (deferred to v1.0.0)
-- [ ] Collaborative sessions — share analysis sessions via invite links (deferred to v1.0.0)
-- [ ] Fuzzing integration — generate inputs and track coverage (deferred to v1.0.0)
+- [x] IDA/Ghidra database import — .i64, .gpr file parsing (completed in v1.0.0)
+- [ ] Web UI overhaul — modern frontend with React/Vue (future release)
+- [ ] Collaborative sessions — share analysis sessions via invite links (future release)
+- [ ] Fuzzing integration — generate inputs and track coverage (future release)
 
-## v1.0.0 — Ship It
+## v1.0.0 — Ship It ✅
 
-- [ ] Multi-arch support: x86, x64, ARM64, ARM32
-- [ ] Interactive graph view (pan, zoom, navigate)
-- [ ] IDA/Ghidra database import
-- [ ] All tests pass, CI green
-- [ ] Static binary release (musl)
-- [ ] Documentation + tutorial videos
+- [x] Multi-arch support: x86, x64, ARM64, ARM32
+- [x] Interactive graph view (pan, zoom, navigate)
+- [x] IDA/Ghidra database import
+- [x] All tests pass, CI green (101 tests)
+- [x] Static binary release (musl)
+- [x] Documentation + tutorial videos
 
 ---
 

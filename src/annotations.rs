@@ -24,10 +24,10 @@ pub struct AnnotationStore {
 }
 
 impl AnnotationStore {
-    pub fn new() -> anyhow::Result<Self> {
-        Ok(AnnotationStore {
+    pub fn new() -> Self {
+        Self {
             annotations: HashMap::new(),
-        })
+        }
     }
 
     pub fn get(&self, address: &str) -> Option<&Vec<Annotation>> {
@@ -57,7 +57,7 @@ impl AnnotationStore {
             .collect()
     }
 
-    pub async fn add(
+    pub fn add(
         &mut self,
         address: &str,
         text: String,
@@ -70,7 +70,7 @@ impl AnnotationStore {
                 .values()
                 .any(|list| list.iter().any(|a| a.id == *pid));
             if !exists {
-                anyhow::bail!("Parent annotation not found: {}", pid);
+                anyhow::bail!("Parent annotation not found: {pid}");
             }
         }
 
@@ -100,15 +100,15 @@ impl AnnotationStore {
                 return Ok(());
             }
         }
-        anyhow::bail!("Annotation not found: {}", annotation_id)
+        anyhow::bail!("Annotation not found: {annotation_id}")
     }
 
     #[allow(dead_code)]
-    pub fn get_all(&self) -> &HashMap<String, Vec<Annotation>> {
+    pub const fn get_all(&self) -> &HashMap<String, Vec<Annotation>> {
         &self.annotations
     }
 
     pub fn annotation_count(&self) -> usize {
-        self.annotations.values().map(|v| v.len()).sum()
+        self.annotations.values().map(std::vec::Vec::len).sum()
     }
 }

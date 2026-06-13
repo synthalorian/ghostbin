@@ -539,7 +539,7 @@ mod tests {
             resources: vec![],
         };
 
-        let mut annotations = crate::annotations::AnnotationStore::new().unwrap();
+        let mut annotations = crate::annotations::AnnotationStore::new();
 
         let import = DatabaseImport {
             source: "ida".to_string(),

@@ -93,7 +93,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         analyzer: Arc::new(RwLock::new(BinaryAnalyzer::new())),
-        annotations: Arc::new(RwLock::new(AnnotationStore::new()?)),
+        annotations: Arc::new(RwLock::new(AnnotationStore::new())),
         bookmarks: Arc::new(RwLock::new(BookmarkStore::new())),
         sessions,
         llm,
@@ -386,7 +386,7 @@ async fn add_annotation(
     Json(req): Json<AnnotationRequest>,
 ) -> Result<impl IntoResponse, StatusCode> {
     let mut store = state.annotations.write().await;
-    match store.add(&addr, req.text, req.author, req.parent_id).await {
+    match store.add(&addr, req.text, req.author, req.parent_id) {
         Ok(_) => Ok(StatusCode::CREATED),
         Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
     }
