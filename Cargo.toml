@@ -1,0 +1,38 @@
+[package]
+name = "ghostbin"
+version = "0.1.0"
+edition = "2021"
+authors = ["synthalorian <synthalorian@gmail.com>"]
+description = "AI-assisted reverse engineering tool with local LLMs"
+license = "MIT"
+repository = "https://github.com/synthalorian/ghostbin"
+
+[[bin]]
+name = "ghostbin"
+path = "src/main.rs"
+
+[dependencies]
+# Core
+tokio = { version = "1.35", features = ["full"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Binary analysis
+goblin = "0.8"          # ELF/Mach-O/PE parsing
+capstone = "0.12"       # Disassembly
+iced-x86 = "1.21"       # x86/x64 decoder
+
+# Decompilation (local)
+reqwest = { version = "0.11", features = ["json"] }
+
+# Graph data structures
+petgraph = "0.6"
+
+
+[dev-dependencies]
+tokio-test = "0.4"
