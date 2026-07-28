@@ -36,7 +36,7 @@ impl AnnotationStore {
 
         self.annotations
             .entry(address.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(annotation);
 
         Ok(())
@@ -44,5 +44,44 @@ impl AnnotationStore {
 
     pub fn get_all(&self) -> &HashMap<String, Vec<Annotation>> {
         &self.annotations
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_annotations_crud() {
+        let mut store = AnnotationStore::new().unwrap();
+
+        // Create
+        store
+            .add("0x1000", "entry point".to_string(), "alice".to_string())
+            .await
+            .unwrap();
+        store
+            .add("0x1000", "check stack canary".to_string(), "bob".to_string())
+            .await
+            .unwrap();
+        store
+            .add("0x2000", "helper".to_string(), "alice".to_string())
+            .await
+            .unwrap();
+
+        // Read
+        let anns = store.get("0x1000").unwrap();
+        assert_eq!(anns.len(), 2);
+        assert_eq!(anns[0].text, "entry point");
+        assert_eq!(anns[0].author, "alice");
+        assert_eq!(anns[1].author, "bob");
+        assert!(anns[0].timestamp > 0);
+        assert_eq!(anns[0].address, "0x1000");
+
+        // Missing address returns None
+        assert!(store.get("0xdead").is_none());
+
+        // get_all covers both addresses
+        assert_eq!(store.get_all().len(), 2);
     }
 }

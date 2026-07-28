@@ -58,6 +58,30 @@ pub enum BinaryFormat {
     Raw,
 }
 
+impl BinaryFormat {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            BinaryFormat::Elf => "ELF",
+            BinaryFormat::MachO => "Mach-O",
+            BinaryFormat::Pe => "PE",
+            BinaryFormat::Raw => "raw",
+        }
+    }
+}
+
+/// Summary metadata returned by GET /api/binary/:id
+#[derive(Debug, Clone, Serialize)]
+pub struct BinaryInfo {
+    pub id: String,
+    pub name: String,
+    pub format: String,
+    pub architecture: String,
+    pub entry_point: u64,
+    pub num_sections: usize,
+    pub num_symbols: usize,
+    pub num_functions: usize,
+}
+
 pub struct Binary {
     pub id: String,
     pub name: String,
@@ -73,6 +97,12 @@ pub struct Binary {
 
 pub struct BinaryAnalyzer {
     binaries: HashMap<String, Binary>,
+}
+
+impl Default for BinaryAnalyzer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BinaryAnalyzer {
@@ -190,15 +220,14 @@ impl BinaryAnalyzer {
                                 section_index: sym.st_shndx as u16,
                             });
 
-                            if sym.st_type() == 2 && sym.st_value != 0 {
-                                if !binary.functions.iter().any(|f| f.address == sym.st_value) {
+                            if sym.st_type() == 2 && sym.st_value != 0
+                                && !binary.functions.iter().any(|f| f.address == sym.st_value) {
                                     binary.functions.push(Function {
                                         address: sym.st_value,
                                         name: name.to_string(),
                                         size: sym.st_size,
                                     });
                                 }
-                            }
                         }
                     }
                 }
@@ -271,30 +300,140 @@ impl BinaryAnalyzer {
                     binary.functions = Self::detect_function_boundaries(&binary.data, &elf, binary.architecture);
                 }
             }
-            Object::Mach(_) => {
+            Object::Mach(goblin::mach::Mach::Binary(macho)) => {
                 binary.format = BinaryFormat::MachO;
-                // TODO: Mach-O parsing
-                binary.functions.push(Function {
-                    address: 0x1000,
-                    name: "entry".to_string(),
-                    size: 0,
-                });
+                binary.architecture = Architecture::from_macho_cputype(macho.header.cputype);
+                binary.entry_point = macho.entry;
+
+                for segment in &macho.segments {
+                    if let Ok(sections) = segment.sections() {
+                        for (sect, _data) in sections {
+                            let name = sect
+                                .name()
+                                .map(|n| n.to_string())
+                                .unwrap_or_default();
+                            binary.sections.push(Section {
+                                name,
+                                address: sect.addr,
+                                size: sect.size,
+                                offset: sect.offset as u64,
+                                flags: sect.flags as u64,
+                                section_type: format!("0x{:x}", sect.flags),
+                            });
+                        }
+                    }
+                }
+
+                if let Some(symbols) = &macho.symbols {
+                    for (name, nlist) in symbols.iter().flatten() {
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let is_func = (nlist.n_type & goblin::mach::symbols::N_TYPE)
+                            == goblin::mach::symbols::N_SECT;
+                        binary.symbols.push(Symbol {
+                            name: name.to_string(),
+                            address: nlist.n_value,
+                            size: 0,
+                            symbol_type: if is_func { "SECT" } else { "OTHER" }.to_string(),
+                            bind: if nlist.is_global() { "GLOBAL" } else { "LOCAL" }.to_string(),
+                            section_index: nlist.n_sect as u16,
+                        });
+                        if is_func && nlist.n_value != 0 {
+                            binary.functions.push(Function {
+                                address: nlist.n_value,
+                                name: name.to_string(),
+                                size: 0,
+                            });
+                        }
+                    }
+                }
+
+                if binary.functions.is_empty() && binary.entry_point != 0 {
+                    binary.functions.push(Function {
+                        address: binary.entry_point,
+                        name: "entry".to_string(),
+                        size: 0,
+                    });
+                }
             }
-            Object::PE(_) => {
+            Object::Mach(goblin::mach::Mach::Fat(_)) => {
+                // Multi-arch (fat) Mach-O: not supported in v1.0.0.
+                anyhow::bail!(
+                    "fat (multi-arch) Mach-O binaries are not supported; \
+                     extract a single-arch slice first (e.g. with `lipo -thin`)"
+                );
+            }
+            Object::PE(pe) => {
+                use goblin::pe::header as pe_header;
+
                 binary.format = BinaryFormat::Pe;
-                // TODO: PE parsing
-                binary.functions.push(Function {
-                    address: 0x1000,
-                    name: "entry".to_string(),
-                    size: 0,
-                });
+                binary.architecture = Architecture::from_pe_machine(pe.header.coff_header.machine);
+                let image_base = pe.image_base as u64;
+                binary.entry_point = image_base + pe.entry as u64;
+
+                for sect in &pe.sections {
+                    let name = sect
+                        .name()
+                        .map(|n| n.to_string())
+                        .unwrap_or_default();
+                    binary.sections.push(Section {
+                        name,
+                        address: image_base + sect.virtual_address as u64,
+                        size: sect.size_of_raw_data as u64,
+                        offset: sect.pointer_to_raw_data as u64,
+                        flags: sect.characteristics as u64,
+                        section_type: format!("0x{:x}", sect.characteristics),
+                    });
+                }
+
+                // Imports (PE has no symbol table in practice; imports/exports are the map)
+                for import in &pe.imports {
+                    binary.symbols.push(Symbol {
+                        name: import.name.to_string(),
+                        address: 0,
+                        size: 0,
+                        symbol_type: "IMPORT".to_string(),
+                        bind: import.dll.to_string(),
+                        section_index: 0,
+                    });
+                }
+
+                // Exports double as the function list for PE binaries
+                for export in &pe.exports {
+                    if let Some(name) = export.name {
+                        let addr = image_base + export.rva as u64;
+                        binary.symbols.push(Symbol {
+                            name: name.to_string(),
+                            address: addr,
+                            size: export.size as u64,
+                            symbol_type: "EXPORT".to_string(),
+                            bind: "GLOBAL".to_string(),
+                            section_index: 0,
+                        });
+                        if addr != 0 {
+                            binary.functions.push(Function {
+                                address: addr,
+                                name: name.to_string(),
+                                size: export.size as u64,
+                            });
+                        }
+                    }
+                }
+
+                if binary.functions.is_empty() && binary.entry_point != 0 {
+                    binary.functions.push(Function {
+                        address: binary.entry_point,
+                        name: "entry".to_string(),
+                        size: 0,
+                    });
+                }
+
+                // Silence unused-import warning if constants change across goblin versions
+                let _ = pe_header::COFF_MACHINE_X86_64;
             }
             _ => {
-                binary.functions.push(Function {
-                    address: 0x1000,
-                    name: "entry".to_string(),
-                    size: 0,
-                });
+                anyhow::bail!("unsupported binary format (expected ELF, PE, or Mach-O)");
             }
         }
 
@@ -471,6 +610,23 @@ impl BinaryAnalyzer {
         Ok(binary.relocations.clone())
     }
 
+    pub fn get_info(&self, id: &str) -> anyhow::Result<BinaryInfo> {
+        let binary = self
+            .binaries
+            .get(id)
+            .ok_or_else(|| anyhow::anyhow!("Binary not found"))?;
+        Ok(BinaryInfo {
+            id: binary.id.clone(),
+            name: binary.name.clone(),
+            format: binary.format.as_str().to_string(),
+            architecture: binary.architecture.as_str().to_string(),
+            entry_point: binary.entry_point,
+            num_sections: binary.sections.len(),
+            num_symbols: binary.symbols.len(),
+            num_functions: binary.functions.len(),
+        })
+    }
+
     pub fn disassemble_function(
         &self,
         id: &str,
@@ -502,7 +658,12 @@ impl BinaryAnalyzer {
             } else {
                 (sec.size as usize).saturating_sub(offset)
             };
-            &binary.data[sec.offset as usize + offset..sec.offset as usize + offset + size]
+            let start = sec.offset as usize + offset;
+            if start >= binary.data.len() {
+                anyhow::bail!("function bytes are outside the file bounds");
+            }
+            let end = start.saturating_add(size).min(binary.data.len());
+            &binary.data[start..end]
         } else {
             // Fallback: try to find in program headers for loaded segments
             match Object::parse(&binary.data)? {
@@ -519,12 +680,10 @@ impl BinaryAnalyzer {
                                 } else {
                                     max_size
                                 };
-                                return Ok(
-                                    Self::disassemble_bytes(&binary.data[file_offset..file_offset + size],
+                                return Self::disassemble_bytes(&binary.data[file_offset..file_offset + size],
                                         address,
                                         binary.architecture,
-                                    )?
-                                );
+                                    );
                             }
                         }
                     }

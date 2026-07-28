@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Rev Engine - AI Reverse Engineering</title>
+    <title>GhostBin - AI Reverse Engineering</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
@@ -36,9 +36,7 @@
             font-family: inherit;
             font-size: 12px;
         }
-        .toolbar button:hover {
-            background: #2a2a35;
-        }
+        .toolbar button:hover { background: #2a2a35; }
         .sidebar {
             background: #12121a;
             border-right: 1px solid #2a2a35;
@@ -52,18 +50,19 @@
             margin-bottom: 8px;
             letter-spacing: 1px;
         }
-        .function-list {
-            list-style: none;
-        }
+        .function-list { list-style: none; }
         .function-list li {
             padding: 4px 8px;
             font-size: 12px;
             cursor: pointer;
             border-radius: 4px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
-        .function-list li:hover {
-            background: #1e1e28;
-        }
+        .function-list li:hover { background: #1e1e28; }
+        .function-list li.active { background: #2a2a40; color: #60c0a0; }
+        .function-list li .faddr { color: #555; margin-right: 6px; }
         .main {
             display: grid;
             grid-template-rows: 1fr 1fr;
@@ -78,14 +77,12 @@
         }
         .disasm-line {
             display: grid;
-            grid-template-columns: 100px 80px 1fr;
+            grid-template-columns: 100px 140px 1fr;
             gap: 12px;
             padding: 2px 8px;
             border-radius: 4px;
         }
-        .disasm-line:hover {
-            background: #1a1a25;
-        }
+        .disasm-line:hover { background: #1a1a25; }
         .addr { color: #6a6a7a; }
         .bytes { color: #4a4a5a; font-size: 11px; }
         .mnemonic { color: #c0a060; }
@@ -97,15 +94,13 @@
             overflow-y: auto;
             font-size: 13px;
         }
-        .decompile-view pre {
-            color: #a0c0e0;
-        }
+        .decompile-view pre { color: #a0c0e0; white-space: pre-wrap; }
         .right-panel {
             background: #12121a;
             border-left: 1px solid #2a2a35;
             padding: 12px;
             display: grid;
-            grid-template-rows: auto 1fr 1fr;
+            grid-template-rows: auto 1fr;
             gap: 12px;
         }
         .ai-analysis {
@@ -114,6 +109,8 @@
             padding: 12px;
             font-size: 12px;
             line-height: 1.5;
+            max-height: 40vh;
+            overflow-y: auto;
         }
         .ai-analysis h4 {
             color: #60c0a0;
@@ -134,10 +131,27 @@
             border-radius: 4px;
             font-size: 12px;
         }
-        .annotation .author {
-            color: #888;
-            font-size: 10px;
-            margin-bottom: 4px;
+        .annotation .author { color: #888; font-size: 10px; margin-bottom: 4px; }
+        .annotation-form { display: flex; gap: 6px; margin-bottom: 10px; }
+        .annotation-form input {
+            flex: 1;
+            background: #0f0f15;
+            border: 1px solid #3a3a45;
+            color: #e0e0e0;
+            padding: 4px 8px;
+            font-family: inherit;
+            font-size: 12px;
+            border-radius: 4px;
+        }
+        .annotation-form button {
+            background: #1e1e28;
+            border: 1px solid #3a3a45;
+            color: #e0e0e0;
+            padding: 4px 10px;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 12px;
+            border-radius: 4px;
         }
         .status-bar {
             position: fixed;
@@ -157,9 +171,10 @@
             width: 8px;
             height: 8px;
             border-radius: 50%;
-            background: #60c0a0;
+            background: #666;
             margin-right: 8px;
         }
+        .status-bar .indicator.online { background: #60c0a0; }
         .loading {
             display: flex;
             align-items: center;
@@ -167,46 +182,30 @@
             height: 100%;
             color: #666;
         }
+        .error-text { color: #e07070; }
+        .muted { color: #555; font-size: 12px; padding: 4px 8px; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="toolbar">
             <button onclick="loadBinary()">Load Binary</button>
-            <button onclick="aiAnalyze()">AI Analyze</button>
             <button onclick="decompile()">Decompile</button>
+            <button onclick="aiAnalyze()">AI Analyze</button>
             <div style="flex: 1;"></div>
-            <span style="font-size: 11px; color: #666;">GhostBin v0.1.0</span>
+            <span style="font-size: 11px; color: #666;">GhostBin v1.0.0</span>
         </div>
 
         <div class="sidebar">
             <h3>Functions</h3>
             <ul class="function-list" id="functionList">
-                <li>entry_point</li>
-                <li>main</li>
-                <li>authenticate</li>
-                <li>encrypt_data</li>
-                <li>parse_config</li>
+                <li class="muted">No binary loaded</li>
             </ul>
         </div>
 
         <div class="main">
             <div class="disasm-view" id="disasmView">
-                <div class="disasm-line">
-                    <span class="addr">0x1000</span>
-                    <span class="bytes">55</span>
-                    <span><span class="mnemonic">push</span> <span class="operands">rbp</span></span>
-                </div>
-                <div class="disasm-line">
-                    <span class="addr">0x1001</span>
-                    <span class="bytes">48 89 e5</span>
-                    <span><span class="mnemonic">mov</span> <span class="operands">rbp, rsp</span></span>
-                </div>
-                <div class="disasm-line">
-                    <span class="addr">0x1004</span>
-                    <span class="bytes">48 83 ec 20</span>
-                    <span><span class="mnemonic">sub</span> <span class="operands">rsp, 0x20</span></span>
-                </div>
+                <div class="muted">Load a binary and select a function to view disassembly.</div>
             </div>
             <div class="decompile-view">
                 <pre id="decompileOutput">// Select a function and click "Decompile" to see pseudo-code</pre>
@@ -216,55 +215,215 @@
         <div class="right-panel">
             <div class="ai-analysis">
                 <h4>AI Analysis</h4>
-                <div id="aiOutput">Click "AI Analyze" to get LLM insights on the selected function.</div>
+                <div id="aiOutput">AI analysis requires a local LLM (optional). Disassembly and decompilation work without it.</div>
             </div>
             <div class="annotations">
                 <h3 style="font-size: 11px; text-transform: uppercase; color: #888; margin-bottom: 8px;">Annotations</h3>
-                <div class="annotation">
-                    <div class="author">synthalorian • 2h ago</div>
-                    <div>This appears to be the main authentication routine. Check for timing attacks.</div>
+                <div class="annotation-form">
+                    <input id="annotationText" placeholder="Add annotation for selected address...">
+                    <button onclick="addAnnotation()">Add</button>
                 </div>
+                <div id="annotationList"></div>
             </div>
         </div>
     </div>
 
     <div class="status-bar">
-        <div class="indicator"></div>
-        <span>Connected to local LLM (llama.cpp)</span>
+        <div class="indicator" id="llmIndicator"></div>
+        <span id="llmStatus">Checking local LLM...</span>
         <span style="flex: 1;"></span>
-        <span>Binary: none loaded</span>
+        <span id="binaryStatus">Binary: none loaded</span>
     </div>
 
     <script>
-        const ws = new WebSocket(`ws://${window.location.host}/ws`);
+        let currentBinaryId = null;
+        let currentAddr = null;
+        let currentName = null;
 
-        ws.onopen = () => console.log('WebSocket connected');
-        ws.onmessage = (event) => {
-            const msg = JSON.parse(event.data);
-            console.log('Received:', msg);
-        };
+        // --- LLM status (optional component) ---
+        async function refreshLlmStatus() {
+            try {
+                const r = await fetch('/api/llm/status');
+                const s = await r.json();
+                const ind = document.getElementById('llmIndicator');
+                if (s.available) {
+                    ind.classList.add('online');
+                    document.getElementById('llmStatus').textContent =
+                        `Local LLM online (${s.model})`;
+                } else {
+                    ind.classList.remove('online');
+                    document.getElementById('llmStatus').textContent =
+                        'Local LLM offline — core features unaffected';
+                }
+            } catch (e) {
+                document.getElementById('llmStatus').textContent = 'Local LLM offline';
+            }
+        }
+        refreshLlmStatus();
+        setInterval(refreshLlmStatus, 15000);
 
-        function loadBinary() {
-            const path = prompt('Enter binary path:');
-            if (path) {
-                fetch('/api/binary/load', {
+        // --- Binary loading ---
+        async function loadBinary() {
+            const path = prompt('Enter binary path (on the server):');
+            if (!path) return;
+            try {
+                const r = await fetch('/api/binary/load', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ path, name: path.split('/').pop() })
-                })
-                .then(r => r.json())
-                .then(data => console.log('Loaded:', data));
+                });
+                const data = await r.json();
+                if (!r.ok) {
+                    alert('Load failed: ' + (data.error || r.status));
+                    return;
+                }
+                currentBinaryId = data.id;
+                document.getElementById('binaryStatus').textContent = 'Binary: ' + data.name;
+
+                const infoR = await fetch(`/api/binary/${currentBinaryId}`);
+                const info = await infoR.json();
+                document.getElementById('binaryStatus').textContent =
+                    `Binary: ${data.name} (${info.format}/${info.architecture}, ${info.num_functions} funcs)`;
+
+                await loadFunctions();
+            } catch (e) {
+                alert('Load failed: ' + e);
             }
         }
 
-        function aiAnalyze() {
-            document.getElementById('aiOutput').innerHTML = '<div class="loading">Analyzing...</div>';
-            // TODO: Call AI analyze endpoint
+        async function loadFunctions() {
+            const r = await fetch(`/api/binary/${currentBinaryId}/functions`);
+            const funcs = await r.json();
+            const list = document.getElementById('functionList');
+            list.innerHTML = '';
+            if (!funcs.length) {
+                list.innerHTML = '<li class="muted">No functions found</li>';
+                return;
+            }
+            for (const f of funcs) {
+                const li = document.createElement('li');
+                const addr = '0x' + f.address.toString(16);
+                li.innerHTML = `<span class="faddr">${addr}</span>${escapeHtml(f.name)}`;
+                li.onclick = () => selectFunction(addr, f.name, li);
+                list.appendChild(li);
+            }
         }
 
-        function decompile() {
-            document.getElementById('decompileOutput').innerHTML = '// Decompiling...';
-            // TODO: Call decompile endpoint
+        async function selectFunction(addr, name, li) {
+            currentAddr = addr;
+            currentName = name;
+            document.querySelectorAll('.function-list li').forEach(el => el.classList.remove('active'));
+            li.classList.add('active');
+
+            const view = document.getElementById('disasmView');
+            view.innerHTML = '<div class="loading">Disassembling...</div>';
+            try {
+                const r = await fetch(`/api/binary/${currentBinaryId}/function/${addr}/disasm`);
+                const insns = await r.json();
+                if (!r.ok) {
+                    view.innerHTML = `<div class="error-text">${escapeHtml(insns.error || 'disassembly failed')}</div>`;
+                    return;
+                }
+                view.innerHTML = '';
+                for (const i of insns) {
+                    const line = document.createElement('div');
+                    line.className = 'disasm-line';
+                    const bytes = i.bytes.map(b => b.toString(16).padStart(2, '0')).join(' ');
+                    line.innerHTML =
+                        `<span class="addr">0x${i.address.toString(16)}</span>` +
+                        `<span class="bytes">${bytes}</span>` +
+                        `<span><span class="mnemonic">${escapeHtml(i.mnemonic)}</span> ` +
+                        `<span class="operands">${escapeHtml(i.operands)}</span></span>`;
+                    view.appendChild(line);
+                }
+            } catch (e) {
+                view.innerHTML = `<div class="error-text">${e}</div>`;
+            }
+            loadAnnotations();
+        }
+
+        // --- Decompile ---
+        async function decompile() {
+            if (!currentBinaryId || !currentAddr) {
+                alert('Select a function first.');
+                return;
+            }
+            const out = document.getElementById('decompileOutput');
+            out.textContent = '// Decompiling...';
+            try {
+                const r = await fetch(
+                    `/api/binary/${currentBinaryId}/function/${currentAddr}/decompile`,
+                    { method: 'POST' });
+                const data = await r.json();
+                out.textContent = r.ok ? data.pseudo_code : ('// Error: ' + (data.error || r.status));
+            } catch (e) {
+                out.textContent = '// Error: ' + e;
+            }
+        }
+
+        // --- AI analysis (optional, degrades gracefully) ---
+        async function aiAnalyze() {
+            if (!currentBinaryId || !currentAddr) {
+                alert('Select a function first.');
+                return;
+            }
+            const out = document.getElementById('aiOutput');
+            out.innerHTML = '<div class="loading">Analyzing...</div>';
+            try {
+                const r = await fetch(
+                    `/api/binary/${currentBinaryId}/function/${currentAddr}/analyze`,
+                    { method: 'POST' });
+                const data = await r.json();
+                if (r.ok) {
+                    out.textContent = data.analysis;
+                } else {
+                    out.innerHTML = `<span class="error-text">${escapeHtml(data.error || 'AI analysis unavailable')}</span>`;
+                }
+            } catch (e) {
+                out.innerHTML = `<span class="error-text">${e}</span>`;
+            }
+        }
+
+        // --- Annotations ---
+        async function loadAnnotations() {
+            const list = document.getElementById('annotationList');
+            if (!currentAddr) { list.innerHTML = ''; return; }
+            try {
+                const r = await fetch(`/api/annotations/${currentAddr}`);
+                const anns = await r.json();
+                list.innerHTML = '';
+                for (const a of anns) {
+                    const div = document.createElement('div');
+                    div.className = 'annotation';
+                    const when = new Date(a.timestamp * 1000).toLocaleString();
+                    div.innerHTML =
+                        `<div class="author">${escapeHtml(a.author)} • ${when} • ${escapeHtml(a.address)}</div>` +
+                        `<div>${escapeHtml(a.text)}</div>`;
+                    list.appendChild(div);
+                }
+            } catch (e) { /* annotations are best-effort */ }
+        }
+
+        async function addAnnotation() {
+            if (!currentAddr) {
+                alert('Select a function first.');
+                return;
+            }
+            const input = document.getElementById('annotationText');
+            const text = input.value.trim();
+            if (!text) return;
+            await fetch(`/api/annotations/${currentAddr}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text, author: 'local-user' })
+            });
+            input.value = '';
+            loadAnnotations();
+        }
+
+        function escapeHtml(s) {
+            return String(s).replace(/[&<>"']/g,
+                c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
         }
     </script>
 </body>
