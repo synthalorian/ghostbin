@@ -2,7 +2,7 @@
 name = "ghostbin"
 version = "1.0.0"
 edition = "2021"
-authors = ["synthalorian <synthalorian@gmail.com>"]
+authors = ["synth <synthalorian@gmail.com>"]
 description = "AI-assisted reverse engineering tool with local LLMs"
 license = "MIT"
 repository = "https://github.com/synthalorian/ghostbin"
